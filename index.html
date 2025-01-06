@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Branden Leong</title>
+
+		<link href="/style.css" rel="stylesheet" type="text/css" />
+		<style id="loading-css">
+			body *:not(#loading) {
+				opacity: 0;
+			}
+		</style>
+		<link href="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/themes/vertical_layout.css" rel="stylesheet" type="text/css" />
+		<link href="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/themes/colors.css" rel="stylesheet" type="text/css" />
+	</head>
+
+	<body>
+		<div class="content-header">Select A Game:</div>
+
+		<div class="content-header" id="game-gong-zhu-btn">
+			<span class="button-positive">Gong Zhu (Pig)</span>
+		</div>
+
+		<div id="bottom-bar">
+			<img id="help" src="https://brandenleong1.github.io/utils/icons/help.svg" />
+			<img id="settings" src="https://brandenleong1.github.io/utils/icons/settings.svg" />
+		</div>
+
+		<div class="popup" id="popup-help">
+			<div class="content-header">Help</div>
+			<div class="content-container-vertical">
+				<div class="content-text">Text styled like <span style="color: var(--color_btn);">this</span> are buttons. Use them to navigate on the site.</div>
+				<!-- <div class="content-text">Text styled like <span style="color: var(--color_link);">this</span> are links. They open in new tabs.</div> -->
+			</div>
+		</div>
+		<div class="popup" id="popup-settings">
+			<div class="content-header">Settings</div>
+			<div class="content-text" style="overflow-y: hidden;">
+				<span class="button-positive" id="theme-btn">Change Theme:</span>
+				<span style="position: relative; display: inline-flex; width: 65px;">
+					<span id="theme-label-1" style="position: absolute; max-width: 60px; overflow-x: hidden; text-overflow: ellipsis;"></span>
+					<span id="theme-label-2" style="max-width: 60px; overflow-x: hidden; text-overflow: ellipsis;"></span>
+				</span>
+			</div>
+		</div>
+
+		<div id="loading"></div>
+
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/math.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/rate_funcs.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/utils.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/animate.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/cookies.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/math_jax.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/math_jax_config.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/themes.js"></script>
+		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/themes/popup.js"></script>
+
+		<script src="/script.js"></script>
+		<script src="/init.js"></script>
+	</body>
+</html>
