@@ -3,9 +3,9 @@
 	<head>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Branden Leong</title>
+		<title>Gong Zhu</title>
 
-		<link href="/style.css" rel="stylesheet" type="text/css" />
+		<link href="../style.css" rel="stylesheet" type="text/css" />
 		<style id="loading-css">
 			body *:not(#loading) {
 				opacity: 0;
@@ -21,6 +21,21 @@
 		<div class="content-container-horizontal" style="align-items: center; justify-content: flex-start;">
 			<input type="text" placeholder="Enter Username..." style="width: 500px;"></input>
 			<div class="button-positive-2" id="submit-username-btn">Submit</div>
+		</div>
+
+		<div class="content-container-horizontal" id="create-lobby-btn">
+			<div class="button-positive-2" style="width: 100%; text-align: center;">+ Create Lobby</div>
+		</div>
+
+		<div class="content-header-2" id="player-count" style="align-self: flex-start;">Online: <span>0</span></div>
+
+		<div id="lobby-select">
+			<div class="lobby-tile content-container-vertical">
+				<div class="content-header-2">Test Server</div>
+				<div class="content-text">Players: 0</div>
+				<div class="content-break-vertical"></div>
+				<div class="content-text">Created: 01/06/25 10:50</div>
+			</div>
 		</div>
 
 		<div id="bottom-bar">
@@ -48,7 +63,7 @@
 
 		<div id="loading"></div>
 
-		<script src="/games/game_gong_zhu.js"></script>
+		<script src="./game_gong_zhu.js"></script>
 
 		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/math.js"></script>
 		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/rate_funcs.js"></script>
@@ -60,6 +75,6 @@
 		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/utils/themes.js"></script>
 		<script src="https://cdn.jsdelivr.net/gh/brandenleong1/utils@latest/themes/popup.js"></script>
 
-		<script src="/init.js"></script>
+		<script src="./game_init.js"></script>
 	</body>
 </html>

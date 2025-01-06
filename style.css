@@ -11,3 +11,42 @@
 	background: var(--color_bg);
 	cursor: wait;
 }
+
+#lobby-select {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 20px;
+	background-color: blue;
+	width: 100%;
+
+}
+
+.lobby-tile {
+	width: 200px;
+	/* height: 250px; */
+	background-color: var(--color_bg2);
+	border-radius: 10px;
+	padding: 10px 20px;
+	row-gap: 0 !important;
+	cursor: pointer;
+}
+
+.lobby-tile .content-header-2 {
+	overflow: hidden;
+	text-wrap: nowrap;
+	text-overflow: ellipsis;
+}
+
+.lobby-tile .content-text {
+	padding: 0;
+	font-size: medium;
+}
+
+.lobby-tile .content-break-vertical {
+	height: 10px;
+}
+
+.lobby-tile:hover {
+	filter: brightness(0.8);
+}

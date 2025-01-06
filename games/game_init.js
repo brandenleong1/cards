@@ -10,10 +10,8 @@ async function init() {
 	for (let e of document.querySelectorAll('[data-anim]')) {
 		if ([Animate.fadeIn].includes(eval(e.dataset.anim))) await Animate.remove(e);
 	}
-	// await Animate.animateGroupByIndex([document.querySelector('#name-title'), document.querySelector('#theme-btn'), , document.querySelector('#theme-label-1')].concat(level0Ids.map(i => document.querySelector('#' + i + '-btn > span'))));
-	// level0Ids.forEach(i => {
-	// 	document.querySelector('#' + i + '-btn > span').onclick = function() {expandLevel0(i);};
-	// });
+
+	// await Animate.remove(document.querySelector('#create-lobby-btn'));
 
 	document.querySelector('#help').onclick = () => {Popup.popup(document.querySelector('#popup-help'))};
 	document.querySelector('#settings').onclick = () => {Popup.popup(document.querySelector('#popup-settings'))};
