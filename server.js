@@ -48,8 +48,12 @@ wss.on('connection', function(ws, req) {
 	}
 
 	ws.on('close', function() {
-		console.log('Closed', this.username);
-		game.gong_zhu.removeUser(this.username);
+		console.log('Closed', this.username, this.connected);
+		if (this.username) {
+			game.gong_zhu.removeUser(this.username);
+			game.gong_zhu.leaveServer(this, this.connected);
+		}
+		console.log(game.gong_zhu.servers);
 		for (let ws of wss.clients) {
 			ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
 		}

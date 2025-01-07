@@ -40,13 +40,13 @@ function initWebSocket() {
 
 		let div = document.createElement('div');
 		div.classList.add('content-text');
-		div.innerText = 'WebSocket connection error, please reload.';
+		div.innerText = 'WebSocket connection error, try again another time.';
 		document.body.appendChild(div);
 	});
 }
 
 document.querySelector('#submit-username-btn').onclick = function() {
-	let username = this.parentElement.querySelector('input').value.trim();
+	let username = this.parentElement.querySelector('input').value.trim().toLowerCase();
 	if (!username.length) Popup.toastPopup('Username cannot be blank');
 	else if (!/^[a-z0-9]+$/i.test(username)) Popup.toastPopup('Username must only contain alphanumeric characters');
 	else {
@@ -99,6 +99,13 @@ function updateLobbies(data) {
 	let lobbySelect = document.querySelector('#lobby-select');
 	Utils.clearDiv(lobbySelect);
 
+	if (!data.data.length) {
+		let div = document.createElement('div');
+		div.classList.add('content-text');
+		div.innerText = 'No lobbies available. Create your own!';
+		lobbySelect.appendChild(div);
+	}
+
 	for (let server of data.data) {
 		console.log(server);
 		let container = document.createElement('div');
@@ -126,6 +133,29 @@ function updateLobbies(data) {
 		[div1, div2, div3, div4, div5].forEach(e => container.appendChild(e));
 
 		lobbySelect.appendChild(container);
+		container.data = server;
+
+		let popup = document.querySelector('#popup-load-lobby');
+		container.onclick = function() {
+			document.querySelector('#load-lobby-name').innerText = server.name;
+			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
+			document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
+
+			let list = document.querySelector('#load-lobby-user-list');
+			Utils.clearDiv(list);
+			for (let user of server.connected) {
+				let div = document.createElement('div');
+				div.classList.add('content-text');
+				div.innerText = (user.username == server.creator ? '⭐ ' : '') + user.username;
+				list.appendChild(div);
+			}
+
+			popup.querySelector('.button-positive-2').onclick = function() {
+				ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
+			};
+
+			Popup.popup(popup);
+		};
 	}
 
 	// TODO update lobbies onscreen
@@ -138,6 +168,9 @@ function createLobby() {
 		if (!val.length) {
 			Popup.toastPopup('One or more fields blank');
 			return;
+		} else if (!/^[a-z0-9]+$/i.test(val)) {
+			Popup.toastPopup('Fields must only contain alphanumeric characters');
+			return;
 		}
 	}
 
@@ -145,8 +178,6 @@ function createLobby() {
 }
 
 function joinLobby(data) {
-	// TODO check for closed lobby while on popup screen
-
 	if (!data.status) Popup.toastPopup(data.data);
 	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data}));
 }

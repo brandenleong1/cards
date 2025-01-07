@@ -17,9 +17,7 @@
 	flex-direction: row;
 	flex-wrap: wrap;
 	gap: 20px;
-	background-color: blue;
 	width: 100%;
-
 }
 
 .lobby-tile {
@@ -49,4 +47,27 @@
 
 .lobby-tile:hover {
 	filter: brightness(0.8);
+}
+
+#load-lobby-name {
+	max-width: 300px;
+	overflow-x: hidden;
+	text-wrap: nowrap;
+	text-overflow: ellipsis;
+}
+
+#load-lobby-user-list {
+	width: 500px;
+	max-height: 50vh;
+	padding: 20px 0;
+	overflow-y: auto;
+	row-gap: 5px;
+	background-color: var(--color_bg2);
+}
+
+#load-lobby-user-list .content-text{
+	min-height: fit-content;
+	overflow-x: hidden;
+	text-wrap: nowrap;
+	text-overflow: ellipsis;
 }

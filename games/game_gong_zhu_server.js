@@ -110,17 +110,38 @@ function joinServer(ws, serverData) {
 		else return a.creator.localeCompare(b.creator);
 	});
 
-	if (idx == -1) return [0, 'Unable to connect to server'];
+	if (idx == -1) return [0, 'Server does not exist'];
 	else {
 		Utils.binaryInsert(servers[idx].connected, ws, function(a, b) {
 			return a.username.localeCompare(b.username);
 		});
-		ws.server = serverData;
+		ws.connected = serverData;
+		return [1, servers[idx]];
+	}
+}
+
+function leaveServer(ws, serverData) {
+	let idx = Utils.binarySearchIdx(servers, serverData, function(a, b) {
+		if (a.time != b.time) return b.time - a.time;
+		else if (a.name != b.name) return a.name.localeCompare(b.name);
+		else return a.creator.localeCompare(b.creator);
+	});
+
+	if (idx == -1) return [0, 'Server does not exist'];
+	else {
+		let idx2 = Utils.binarySearchIdx(servers[idx].connected, ws, function(a, b) {
+			return a.username.localeCompare(b.username);
+		});
+		if (idx2 != -1) servers[idx].connected.splice(idx2, 1);
+		if (!servers[idx].connected.length) {
+			servers.splice(idx, 1);
+			return [1, null];
+		}
 		return [1, servers[idx]];
 	}
 }
 
 module.exports = {
 	addUser, removeUser,
-	servers, addServer, joinServer
+	servers, addServer, joinServer, leaveServer
 };
