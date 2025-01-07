@@ -11,10 +11,12 @@ async function init() {
 		if ([Animate.fadeIn].includes(eval(e.dataset.anim))) await Animate.remove(e);
 	}
 
-	// await Animate.remove(document.querySelector('#create-lobby-btn'));
+	// await Animate.remove(document.querySelector('#lobby-menu'));
 
 	document.querySelector('#help').onclick = () => {Popup.popup(document.querySelector('#popup-help'))};
 	document.querySelector('#settings').onclick = () => {Popup.popup(document.querySelector('#popup-settings'))};
+
+	initWebSocket();
 }
 
 function initTheme(id = 0) {

@@ -23,19 +23,14 @@
 			<div class="button-positive-2" id="submit-username-btn">Submit</div>
 		</div>
 
-		<div class="content-container-horizontal" id="create-lobby-btn">
-			<div class="button-positive-2" style="width: 100%; text-align: center;">+ Create Lobby</div>
-		</div>
-
-		<div class="content-header-2" id="player-count" style="align-self: flex-start;">Online: <span>0</span></div>
-
-		<div id="lobby-select">
-			<div class="lobby-tile content-container-vertical">
-				<div class="content-header-2">Test Server</div>
-				<div class="content-text">Players: 0</div>
-				<div class="content-break-vertical"></div>
-				<div class="content-text">Created: 01/06/25 10:50</div>
+		<div class="content-container-vertical" id="lobby-menu">
+			<div class="content-container-horizontal" id="create-lobby-btn">
+				<div class="button-positive-2" style="width: 100%; text-align: center;" onclick="Popup.popup(document.querySelector('#popup-create-lobby'));">+ Create Lobby</div>
 			</div>
+
+			<div class="content-header-2" id="player-count" style="align-self: flex-start;">Online: <span>0</span></div>
+
+			<div id="lobby-select"></div>
 		</div>
 
 		<div id="bottom-bar">
@@ -58,6 +53,20 @@
 					<span id="theme-label-1" style="position: absolute; max-width: 60px; overflow-x: hidden; text-overflow: ellipsis;"></span>
 					<span id="theme-label-2" style="max-width: 60px; overflow-x: hidden; text-overflow: ellipsis;"></span>
 				</span>
+			</div>
+		</div>
+		<div class="popup" id="popup-create-lobby">
+			<div class="content-header">Create Lobby</div>
+			<div class="content-table">
+				<table class="no-border">
+					<tr>
+						<td>Lobby Name</td>
+						<td><input type="text" id="create-lobby-name" placeholder="Lobby Name"></td>
+					</tr>
+				</table>
+			</div>
+			<div class="content-container-horizontal">
+				<div class="button-positive-2" onclick="createLobby();">Create</div>
 			</div>
 		</div>
 

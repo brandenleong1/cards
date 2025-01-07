@@ -22,16 +22,38 @@ wss.on('connection', function(ws, req) {
 		data = JSON.parse(data);
 		// console.log(data);
 
-		switch (data.tag) {
+		let res;
+		switch (data.tag) {	// TODO differentiate between independent game signals
 			case 'requestUsername':
-				let res = game.gong_zhu.addUser(data.data);
+				res = game.gong_zhu.addUser(data.data);
 				if (res[0]) ws.username = res[1];
 				ws.send(JSON.stringify({tag: 'receiveUsername', status: res[0], data: res[1]}));
+				break;
+			case 'getLobbies':
+				ws.send(JSON.stringify({tag: 'updateLobbies', data: game.gong_zhu.servers}));
+				break;
+			case 'createLobby':
+				res = game.gong_zhu.addServer(data.data);
+				ws.send(JSON.stringify({tag: 'createdLobby', status: res[0], data: res[1]}));
+				break;
+			case 'joinLobby':
+				res = game.gong_zhu.joinServer(ws, data.data);
+				ws.send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
 				break;
 		}
 	});
 
-	ws.send(JSON.stringify({tag: 'receiveLobbies', data: {userCount: wss.clients.size}}));
+	for (let ws of wss.clients) {
+		ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+	}
+
+	ws.on('close', function() {
+		console.log('Closed', this.username);
+		game.gong_zhu.removeUser(this.username);
+		for (let ws of wss.clients) {
+			ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+		}
+	});
 });
 
 server.listen(app_port);
@@ -49,7 +71,8 @@ server.listen(app_port);
 // });
 
 // app.get('/', function(req, res) {
-// 	res.sendFile(path.join(__dirname, '/index.html'));
+// 	console.log(req, req.body);
+// 	// res.sendFile(path.join(__dirname, '/index.html'));
 // });
 
 // // app.get("/msg", (req, res, next) => {
