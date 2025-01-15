@@ -26,7 +26,10 @@ wss.on('connection', function(ws, req) {
 		switch (data.tag) {	// TODO differentiate between independent game signals
 			case 'requestUsername':
 				res = game.gong_zhu.addUser(data.data);
-				if (res[0]) ws.username = res[1];
+				if (res[0]) {
+					ws.username = res[1];
+					game.gong_zhu.users[res[1]] = ws;
+				}
 				ws.send(JSON.stringify({tag: 'receiveUsername', status: res[0], data: res[1]}));
 				break;
 			case 'getLobbies':
@@ -38,7 +41,25 @@ wss.on('connection', function(ws, req) {
 				break;
 			case 'joinLobby':
 				res = game.gong_zhu.joinServer(ws, data.data);
-				ws.send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
+				if (res[0]) {
+					for (let username of res[1].connected) {
+						game.gong_zhu.users[username].send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
+					}
+					console.log('joinServer', res[1].connected);
+					// ws.connected = data.data;
+					// console.log('joinServer', ws.connected, data.data.connected);
+				} else {
+					ws.send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
+				}
+				break;
+			case 'leaveLobby':
+				if (ws.connected) {
+					game.gong_zhu.leaveServer(ws, ws.connected);
+					for (let username of ws.connected.connected) {
+						let ws1 = game.gong_zhu.users[username];
+						ws1.send(JSON.stringify({tag: 'joinedLobby', status: 1, data: ws.connected}));
+					}
+				}
 				break;
 		}
 	});
@@ -48,10 +69,16 @@ wss.on('connection', function(ws, req) {
 	}
 
 	ws.on('close', function() {
+		// TODO when host disconnects, pass to someone else
 		console.log('Closed', this.username, this.connected);
-		if (this.username) {
-			game.gong_zhu.removeUser(this.username);
+		console.log(game.gong_zhu.servers);
+		if (this.username) game.gong_zhu.removeUser(this.username);
+		if (this.connected) {
 			game.gong_zhu.leaveServer(this, this.connected);
+			for (let username of this.connected.connected) {
+				let ws = game.gong_zhu.users[username];
+				ws.send(JSON.stringify({tag: 'joinedLobby', status: 1, data: this.connected}));
+			}
 		}
 		console.log(game.gong_zhu.servers);
 		for (let ws of wss.clients) {

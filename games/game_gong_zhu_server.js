@@ -1,4 +1,4 @@
-let users = new Set();
+let users = new Map(); // Username => WS
 let usernames = new Map();
 
 let servers = [];
@@ -61,6 +61,7 @@ function addUser(username) {
 				let t = Math.floor(Math.random() * 10000).toString(10).padStart(4, '0');
 				let user = username + '#' + t;
 				if (!users.has(user)) {
+					usernames[username]++;
 					return [1, user];
 				}
 			}
@@ -68,6 +69,7 @@ function addUser(username) {
 	} else {
 		let t = Math.floor(Math.random() * 10000).toString(10).padStart(4, '0');
 		let user = username + '#' + t;
+		usernames[username] = 1;
 		return [1, user];
 	}
 }
@@ -91,57 +93,52 @@ function addServer(data) {
 	return [idx == -1 ? 0 : 1, data];
 }
 
-function getServer(serverData) {
-	let idx = Utils.binarySearchIdx(servers, serverData, function(a, b) {
+function getServerIdx(serverData) {
+	return Utils.binarySearchIdx(servers, serverData, function(a, b) {
 		if (a.time != b.time) return b.time - a.time;
 		else if (a.name != b.name) return a.name.localeCompare(b.name);
 		else return a.creator.localeCompare(b.creator);
 	});
-
-	if (idx == -1) return null;
-	else return servers[idx];
 }
 
 function joinServer(ws, serverData) {
 	// console.log(serverData);
-	let idx = Utils.binarySearchIdx(servers, serverData, function(a, b) {
-		if (a.time != b.time) return b.time - a.time;
-		else if (a.name != b.name) return a.name.localeCompare(b.name);
-		else return a.creator.localeCompare(b.creator);
-	});
+	let idx = getServerIdx(serverData);
 
 	if (idx == -1) return [0, 'Server does not exist'];
 	else {
-		Utils.binaryInsert(servers[idx].connected, ws, function(a, b) {
-			return a.username.localeCompare(b.username);
+		Utils.binaryInsert(servers[idx].connected, ws.username, function(a, b) {
+			return a.localeCompare(b);
 		});
-		ws.connected = serverData;
+		// console.log(servers[idx].connected);
+		// console.log('joinServer', ws, serverData);
+		ws.connected = servers[idx];
 		return [1, servers[idx]];
 	}
 }
 
 function leaveServer(ws, serverData) {
-	let idx = Utils.binarySearchIdx(servers, serverData, function(a, b) {
-		if (a.time != b.time) return b.time - a.time;
-		else if (a.name != b.name) return a.name.localeCompare(b.name);
-		else return a.creator.localeCompare(b.creator);
-	});
+	let idx = getServerIdx(serverData);
 
 	if (idx == -1) return [0, 'Server does not exist'];
 	else {
-		let idx2 = Utils.binarySearchIdx(servers[idx].connected, ws, function(a, b) {
-			return a.username.localeCompare(b.username);
+		let idx2 = Utils.binarySearchIdx(servers[idx].connected, ws.username, function(a, b) {
+			return a.localeCompare(b);
 		});
 		if (idx2 != -1) servers[idx].connected.splice(idx2, 1);
 		if (!servers[idx].connected.length) {
 			servers.splice(idx, 1);
 			return [1, null];
 		}
+		if (servers[idx].host == ws.username) {
+			let hostIdx = Math.floor(Math.random() * servers[idx].connected.length);
+			servers[idx].host = servers[idx].connected[hostIdx];
+		}
 		return [1, servers[idx]];
 	}
 }
 
 module.exports = {
-	addUser, removeUser,
+	users, addUser, removeUser,
 	servers, addServer, joinServer, leaveServer
 };

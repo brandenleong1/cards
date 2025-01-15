@@ -2,6 +2,17 @@ let ws;
 // let ws = new WebSocket('ws' + window.location.href.substring(window.location.href.indexOf(':')));
 
 let username;
+let server;
+let handlers = {};
+
+let messageDecoder = {
+	'receiveUsername':	(data) => {receiveUsername(data);},
+	'updateUserCount':	(data) => {updateUserCount(data);},
+	'updateLobbies':	(data) => {updateLobbies(data);},
+	'createdLobby':		(data) => {joinLobby(data);},
+	'joinedLobby':		(data) => {showLobby(data);}
+};
+
 
 function initWebSocket() {
 	ws = new WebSocket('http://localhost:8080');
@@ -10,23 +21,14 @@ function initWebSocket() {
 		console.log(message);
 	
 		let data = JSON.parse(message.data);
-		switch (data.tag) {
-			case 'receiveUsername':
-				receiveUsername(data);
-				break;
-			case 'updateUserCount':
-				updateUserCount(data);
-				break;
-			case 'updateLobbies':
-				updateLobbies(data);
-				break;
-			case 'createdLobby':
-				joinLobby(data);
-				break;
-			case 'joinedLobby':
-				showLobby(data);
-				break;
+		let tags = data.tag.split('/');
+		let func;
+		for (let i = 0; i < tags.length; i++) {
+			if (!i) func = messageDecoder[tags[i]];
+			else func = func[tags[i]];
 		}
+		// let func = messageDecoder[data.tag];
+		if (func) func(data);
 	});
 	
 	ws.addEventListener('error', function(e) {
@@ -70,6 +72,11 @@ function receiveUsername(data) {
 		div.innerHTML = 'Playing as: <span style="color: var(--color_red);">' + data.data + '</span>';
 		parent.appendChild(div);
 		username = data.data;
+		
+		getLobbies();
+		handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
+
+		document.querySelector('#lobby-menu').style.display = null;
 	}
 	btn.style.cursor = null;
 	btn.style.filter = null;
@@ -139,6 +146,7 @@ function updateLobbies(data) {
 		container.onclick = function() {
 			document.querySelector('#load-lobby-name').innerText = server.name;
 			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
+			document.querySelector('#load-lobby-host').innerText = 'Host: ' + server.host;
 			document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
 
 			let list = document.querySelector('#load-lobby-user-list');
@@ -146,7 +154,7 @@ function updateLobbies(data) {
 			for (let user of server.connected) {
 				let div = document.createElement('div');
 				div.classList.add('content-text');
-				div.innerText = (user.username == server.creator ? '⭐ ' : '') + user.username;
+				div.innerText = (user == server.host ? '⭐ ' : '') + user;
 				list.appendChild(div);
 			}
 
@@ -174,11 +182,14 @@ function createLobby() {
 		}
 	}
 
-	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username}}));
+	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}}));
 }
 
 function joinLobby(data) {
-	if (!data.status) Popup.toastPopup(data.data);
+	if (!data.status) {
+		Popup.toastPopup(data.data);
+		return;
+	}
 	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data}));
 }
 
@@ -188,5 +199,37 @@ function showLobby(data) {
 		return;
 	}
 
-	console.log('Joined Lobby', data);
+	document.querySelector('#popup-create-lobby').parentNode.click();
+	document.querySelector('#popup-load-lobby').parentNode.click();
+
+	document.querySelector('#lobby-menu').style.display = 'none';
+	document.querySelector('#lobby').style.display = null;
+
+	// console.log('Joined Lobby', data);
+	server = data.data;
+	document.querySelector('#lobby-name').innerText = 'Lobby [' + server.name + ']';
+	document.querySelector('#lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
+	document.querySelector('#lobby-host').innerText = 'Host: ' + server.host;
+	document.querySelector('#lobby-users').innerText = 'Players: ' + server.connected.length;
+
+	let list = document.querySelector('#lobby-user-list');
+	Utils.clearDiv(list);
+	for (let user of server.connected) {
+		let div = document.createElement('div');
+		div.classList.add('content-text');
+		div.innerText = (user == server.host ? '⭐ ' : '') + user + (user == username ? ' ⇐ You' : '');
+		list.appendChild(div);
+	}
+
+	if (handlers['lobbyRefresh']) clearInterval(handlers['lobbyRefresh']);
+}
+
+function leaveLobby() {
+	ws.send(JSON.stringify({tag: 'leaveLobby'}));
+
+	getLobbies();
+	handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
+
+	document.querySelector('#lobby-menu').style.display = null;
+	document.querySelector('#lobby').style.display = 'none';
 }

@@ -23,7 +23,7 @@
 			<div class="button-positive-2" id="submit-username-btn">Submit</div>
 		</div>
 
-		<div class="content-container-vertical" id="lobby-menu">
+		<div class="content-container-vertical" id="lobby-menu" style="display: none;">
 			<div class="content-container-horizontal" id="create-lobby-btn">
 				<div class="button-positive-2" style="width: 100%; text-align: center;" onclick="Popup.popup(document.querySelector('#popup-create-lobby'));">+ Create Lobby</div>
 			</div>
@@ -31,6 +31,17 @@
 			<div class="content-header-2" id="player-count" style="align-self: flex-start;">Online: <span>0</span></div>
 
 			<div id="lobby-select"></div>
+		</div>
+
+		<div class="content-container-vertical" id="lobby" style="display: none;">
+			<div class="content-container-horizontal" style="justify-content: space-between; align-items: center;">
+				<div class="content-header" id="lobby-name"></div>
+				<div class="button-positive-2" onclick="leaveLobby();">Leave</div>
+			</div>
+			<div class="content-text" id="lobby-creation"></div>
+			<div class="content-text" id="lobby-host"></div>
+			<div class="content-text" id="lobby-users"></div>
+			<div class="content-container-vertical" id="lobby-user-list"></div>
 		</div>
 
 		<div id="bottom-bar">
@@ -72,6 +83,7 @@
 		<div class="popup" id="popup-load-lobby">
 			<div class="content-header" style="display: flex;"><span>Lobby [</span><span id="load-lobby-name"></span><span>]</span></div>
 			<div class="content-text" id="load-lobby-creation" style="align-self: flex-start;"></div>
+			<div class="content-text" id="load-lobby-host" style="align-self: flex-start;"></div>
 			<div class="content-text" id="load-lobby-users" style="align-self: flex-start;"></div>
 			<div class="content-container-vertical" id="load-lobby-user-list"></div>
 			<div class="button-positive-2">Join</div>

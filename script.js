@@ -3,7 +3,7 @@ function reqListener (data) {
 }
 
 document.querySelector('#game-gong-zhu-btn').onclick = function() {
-	window.location = '/home/branden/Documents/proj/cards/games/game_gong_zhu.html';
+	window.location = './games/game_gong_zhu.html';
 	// console.log(window.location);
 
 	// let xhr = new XMLHttpRequest();
