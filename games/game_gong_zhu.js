@@ -6,11 +6,13 @@ let server;
 let handlers = {};
 
 let messageDecoder = {
-	'receiveUsername':	(data) => {receiveUsername(data);},
-	'updateUserCount':	(data) => {updateUserCount(data);},
-	'updateLobbies':	(data) => {updateLobbies(data);},
-	'createdLobby':		(data) => {joinLobby(data);},
-	'joinedLobby':		(data) => {showLobby(data);}
+	'broadcastedMessage':	(data) => {Popup.toastPopup(data.data);},
+	'receiveUsername':		(data) => {receiveUsername(data);},
+	'updateUserCount':		(data) => {updateUserCount(data);},
+	'updateLobbies':		(data) => {updateLobbies(data);},
+	'createdLobby':			(data) => {joinLobby(data);},
+	'joinedLobby':			(data) => {showLobby(data);},
+	'leftLobby':			(data) => {leftLobby(data);}
 };
 
 
@@ -27,7 +29,6 @@ function initWebSocket() {
 			if (!i) func = messageDecoder[tags[i]];
 			else func = func[tags[i]];
 		}
-		// let func = messageDecoder[data.tag];
 		if (func) func(data);
 	});
 	
@@ -47,13 +48,15 @@ function initWebSocket() {
 	});
 }
 
-document.querySelector('#submit-username-btn').onclick = function() {
-	let username = this.parentElement.querySelector('input').value.trim().toLowerCase();
+function submitUsername() {
+	let btn = document.querySelector('#submit-username-btn');
+
+	let username = btn.parentElement.querySelector('input').value.trim().toLowerCase();
 	if (!username.length) Popup.toastPopup('Username cannot be blank');
 	else if (!/^[a-z0-9]+$/i.test(username)) Popup.toastPopup('Username must only contain alphanumeric characters');
 	else {
-		this.style.filter = 'brightness(0.5)';
-		this.style.cursor = 'not-allowed';
+		btn.style.filter = 'brightness(0.5)';
+		btn.style.cursor = 'not-allowed';
 
 		if (ws) ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
 	}
@@ -136,8 +139,12 @@ function updateLobbies(data) {
 		let div5 = document.createElement('div');
 		div5.classList.add('content-text');
 		div5.innerText = 'By: ' + server.creator;
+		
+		let div6 = document.createElement('div');
+		div6.classList.add('content-text');
+		div6.innerText = 'Host: ' + server.host;
 
-		[div1, div2, div3, div4, div5].forEach(e => container.appendChild(e));
+		[div1, div2, div3, div4, div5, div6].forEach(e => container.appendChild(e));
 
 		lobbySelect.appendChild(container);
 		container.data = server;
@@ -212,6 +219,8 @@ function showLobby(data) {
 	document.querySelector('#lobby-host').innerText = 'Host: ' + server.host;
 	document.querySelector('#lobby-users').innerText = 'Players: ' + server.connected.length;
 
+	document.querySelector('#btn-start-game').style.display = (server.host == username) ? null : 'none';
+
 	let list = document.querySelector('#lobby-user-list');
 	Utils.clearDiv(list);
 	for (let user of server.connected) {
@@ -226,10 +235,25 @@ function showLobby(data) {
 
 function leaveLobby() {
 	ws.send(JSON.stringify({tag: 'leaveLobby'}));
+}
+
+function leftLobby(data) {
+	if (!data.status) {
+		Popup.toastPopup(data.data);
+		return;
+	}
 
 	getLobbies();
 	handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
 
 	document.querySelector('#lobby-menu').style.display = null;
 	document.querySelector('#lobby').style.display = 'none';
+}
+
+function startGame() {
+	ws.send(JSON.stringify({tag: 'startGame'}));
+}
+
+function startedGame(data) { // TODO Init Game
+
 }

@@ -15,6 +15,14 @@ async function init() {
 
 	document.querySelector('#help').onclick = () => {Popup.popup(document.querySelector('#popup-help'))};
 	document.querySelector('#settings').onclick = () => {Popup.popup(document.querySelector('#popup-settings'))};
+	
+	document.querySelector('#submit-username-btn').addEventListener('click', submitUsername);
+	document.querySelector('#submit-username-btn').parentElement.querySelector('input').addEventListener('keypress', function(e) {
+		if (e.key == 'Enter') {
+			e.preventDefault();
+			submitUsername();
+		}
+	});
 
 	initWebSocket();
 }

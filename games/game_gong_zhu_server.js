@@ -1,60 +1,29 @@
-let users = new Map(); // Username => WS
+// const Utils = require(path.resolve(__dirname, '../utils.js')).Utils;
+
+import * as Utils from '../utils/utils.js';
+import * as GameUtils from '../utils/game_utils.js';
+
+export let users = new Map(); // Username => WS
 let usernames = new Map();
 
-let servers = [];
+export let servers = [];
 
-const Utils = {
-	binarySearchIdx : function(list, item, compareFn = (a, b) => a - b) {
-		let left = 0, right = list.length - 1;
+export const defaultSettings = {
+	gameState: '',
+	decks: [],
+	numDecks: 1,
+	minPlayers: 4,
+	maxPlayers: 4,
+	turnOrder: [],
+	hands: [],
+	discard: [],
+	losingThreshold: -1000,
+	scores: [],
+};
 
-		while (left <= right) {
-			let mid = Math.floor((left + right) / 2);
-			let compRes = compareFn(list[mid], item);
-			if (isNaN(compRes)) {
-				break;
-			}
 
-			if (compRes > 0) {
-				right = mid - 1;
-			} else if (compRes < 0) {
-				left = mid + 1;
-			} else {
-				if (mid > 0 && compareFn(list[mid - 1], item) == 0) {
-					right = mid - 1;
-				} else {
-					return mid;
-				}
-			}
-		}
-
-		return -1;
-	},
-
-	binaryInsert : function(list, item, compareFn = (a, b) => a - b) {
-		let left = 0, right = list.length;
-		let mid = 0;
-		let compRes = 0;
-
-		while (left < right) {
-			mid = Math.floor((left + right) / 2);
-			compRes = compareFn(list[mid], item);
-			if (compRes > 0) {
-				right = mid;
-			} else if (compRes < 0) {
-				left = mid + 1;
-			} else {
-				return -1;
-			}
-		}
-		if (compRes < 0) mid++;
-
-		list.splice(mid, 0, item);
-		return mid;
-	}
-}
-
-function addUser(username) {
-	if (usernames.has(username)) {
+export function addUser(username) {
+	if (usernames[username]) {
 		if (usernames[username] == 1000) return [0, 'Username saturated'];
 		else {
 			while (true) {
@@ -74,14 +43,15 @@ function addUser(username) {
 	}
 }
 
-function removeUser(username) {
+export function removeUser(username) {
 	if (!username) return;
 	usernames[username.split('#', 1)[0]] -= 1;
 	users.delete(username);
 }
 
-function addServer(data) {
+export function addServer(data) {
 	data.connected = [];
+	data.gameData = {};
 	let idx = Utils.binaryInsert(servers, data, function(a, b) {
 		if (a.time != b.time) return b.time - a.time;
 		else if (a.name != b.name) return a.name.localeCompare(b.name);
@@ -93,7 +63,7 @@ function addServer(data) {
 	return [idx == -1 ? 0 : 1, data];
 }
 
-function getServerIdx(serverData) {
+export function getServerIdx(serverData) {
 	return Utils.binarySearchIdx(servers, serverData, function(a, b) {
 		if (a.time != b.time) return b.time - a.time;
 		else if (a.name != b.name) return a.name.localeCompare(b.name);
@@ -101,7 +71,7 @@ function getServerIdx(serverData) {
 	});
 }
 
-function joinServer(ws, serverData) {
+export function joinServer(ws, serverData) {
 	// console.log(serverData);
 	let idx = getServerIdx(serverData);
 
@@ -117,7 +87,7 @@ function joinServer(ws, serverData) {
 	}
 }
 
-function leaveServer(ws, serverData) {
+export function leaveServer(ws, serverData) {
 	let idx = getServerIdx(serverData);
 
 	if (idx == -1) return [0, 'Server does not exist'];
@@ -138,7 +108,86 @@ function leaveServer(ws, serverData) {
 	}
 }
 
-module.exports = {
-	users, addUser, removeUser,
-	servers, addServer, joinServer, leaveServer
-};
+export function initGame(server) {
+	let gameData = server.gameData;
+	for (let i = 0; i < gameData.numDecks; i++) {
+		gameData.decks.push(GameUtils.initDeck());
+		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i]);
+	}
+
+	let turnOrder = new Array(server.connected.length).fill(0).map((e, i) => i);
+	for (let i = 0; i < server.connected.length; i++) {
+		gameData.hands.push(new Array());
+		gameData.scores.push(0);
+	}
+	gameData.turnOrder = Utils.shuffleArray(turnOrder);
+
+	gameData.gameState = 'DEAL_3';
+	gameOFL(server);
+}
+
+async function gameServerNSL(server) {
+	if (server.gameData.gameState == 'DEAL_3') {
+		await Utils.sleep(2000);
+		server.gameData.gameState = 'SHOW_3';
+	} else if (server.gameData.gameState == 'DEAL_ALL') {
+		await Utils.sleep(2000);
+		server.gameData.gameState = 'SHOW_ALL';
+	} else if (server.gameData.gameState == 'SCORE') {
+		await Utils.sleep(10000);
+		if (server.gameData.scores.every(e => e > server.gameData.losingThreshold)) {
+			server.gameData.gameState = 'DEAL_3';
+		} else {
+			server.gameData.gameState = 'LEADERBOARD';
+		}
+	}
+	gameOFL(server);
+}
+
+export function gameClientNSL(server) {
+	if (server.gameData.gameState == 'SHOW_3') {
+		server.gameData.gameState = 'DEAL_ALL';
+	} else if (server.gameData.gameState == 'SHOW_ALL') {
+		server.gameData.gameState = 'PLAY_1';
+	} else if (server.gameData.gameState == 'PLAY_1') {
+		server.gameData.gameState = 'PLAY_2';
+	} else if (server.gameData.gameState == 'PLAY_2') {
+		server.gameData.gameState = 'PLAY_3';
+	} else if (server.gameData.gameState == 'PLAY_3') {
+		server.gameData.gameState = 'PLAY_4';
+	} else if (server.gameData.gameState == 'PLAY_4') {
+		if (server.gameData.hands.every(e => !e.length)) {
+			server.gameData.gameState = 'SCORE';
+		} else {
+			server.gameData.gameState = 'PLAY_1';
+		}
+	} else if (server.gameData.gameState == 'LEADERBOARD') {
+		server.gameData.gameState = 'DEAL_3';
+	}
+	gameOFL(server);
+}
+
+function gameOFL(server) { // TODO OFL
+	let state = server.gameData.gameState;
+	if (state == 'DEAL_3') {
+
+	} else if (state == 'SHOW_3') {
+
+	} else if (state == 'DEAL_ALL') {
+
+	} else if (state == 'SHOW_ALL') {
+
+	} else if (state == 'PLAY_1') {
+
+	} else if (state == 'PLAY_2') {
+
+	} else if (state == 'PLAY_3') {
+
+	} else if (state == 'PLAY_4') {
+
+	} else if (state == 'SCORE') {
+
+	} else if (state == 'LEADERBOARD') {
+
+	}
+}
