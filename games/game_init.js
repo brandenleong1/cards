@@ -24,6 +24,17 @@ async function init() {
 		}
 	});
 
+	document.querySelector('#console-size-slider').addEventListener('input', function() {
+		// x / 100 = flexGrow / (flexGrow + 100)
+		// x (flexGrow + 100) = 100 * flexGrow
+		// x * flexGrow + 100x = 100 * flexGrow
+		// (x - 100) * flexGrow = -100x
+		// flexGrow = (-100x) / (x - 100)
+		// flexGrow = (100x) / (100 - x)
+		let x = parseInt(this.value, 10);
+		document.querySelector('#game-console').style.flexGrow = Math.floor((100 * x) / (100 - x));
+	});
+
 	initWebSocket();
 }
 

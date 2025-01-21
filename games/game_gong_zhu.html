@@ -17,7 +17,8 @@
 	</head>
 
 	<body>
-		<div class="content-header">Gong Zhu (Pig)</div>
+		<div class="content-header" id="title">Gong Zhu (Pig)</div>
+		<!-- <div class="content-header" id="title" style="display: none;">Gong Zhu (Pig)</div> -->
 
 		<!-- <div class="content-container-horizontal" style="font-size: 10em;">
 			🂡 🂿 🃏 🃟
@@ -205,6 +206,38 @@
 			<div class="content-container-vertical" id="lobby-user-list"></div>
 		</div>
 
+		<div class="content-container-horizontal" id="game" style="display: none;height: calc(100vh - 40px);">
+		<!-- <div class="content-container-horizontal" id="game" style="height: calc(100vh - 40px);"> -->
+			<div class="content-container-vertical" style="flex-grow: 4; height: 100%; width: 0; row-gap: 10px;">
+				<div style="background-color: blue; flex-grow: 100; width: 100%;"></div>
+				<div class="content-divider-horizontal"></div>
+				<div id="game-console" style="flex-grow: 25;">
+					<div class="content-header-2"><b>Console</b></div>
+					<div class="content-container-vertical" id="game-console-output">
+						<span>test</span>
+						<span>test</span>
+						<span>test</span>
+						<span>efajwklvnejkalnvejkalnfvejkawlevjkalnvejkalnvjeklwanvjeklwnavjklenjklnjkvnejakvlnewja</span>
+					</div>
+					<label style="display: flex; align-items: center; border-top: 1px solid black; cursor: text;"> >
+						<input type="text" id="game-console-input" />
+					</label>
+				</div>
+			</div>
+			<div id="game-chat" style="width: 0; max-width: 400px; flex-grow: 2;">
+				<div class="content-header-2"><b>Chat</b></div>
+				<div class="content-container-vertical" id="game-chat-output">
+					<span>test</span>
+					<span>test</span>
+					<span>test</span>
+					<span>efajwklvnejkalnvejkalnfvejkawlevjkalnvejkalnvjeklwanvjeklwnavjklenjklnjkvnejakvlnewja</span>
+				</div>
+				<label style="display: flex; align-items: center; border-top: 1px solid black; cursor: text;">
+					<input type="text" id="game-chat-input" placeholder="Type to chat..." />
+				</label>
+			</div>
+		</div>
+
 		<div id="bottom-bar">
 			<img id="help" src="https://brandenleong1.github.io/utils/icons/help.svg" />
 			<img id="settings" src="https://brandenleong1.github.io/utils/icons/settings.svg" />
@@ -225,6 +258,10 @@
 					<span id="theme-label-1" style="position: absolute; max-width: 60px; overflow-x: hidden; text-overflow: ellipsis;"></span>
 					<span id="theme-label-2" style="max-width: 60px; overflow-x: hidden; text-overflow: ellipsis;"></span>
 				</span>
+			</div>
+			<div class="content-container-horizontal">
+				<div class="content-text">Console Size:</div>
+				<input type="range" id="console-size-slider" min="10" max="90" value="20" />
 			</div>
 		</div>
 		<div class="popup" id="popup-create-lobby">
