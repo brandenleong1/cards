@@ -4,8 +4,11 @@ const http = require('http');
 const ws = require('ws');
 
 const game = {
-	gong_zhu: require(path.resolve(__dirname, './games/game_gong_zhu_server.js'))
+	gong_zhu: require(path.resolve(__dirname, './games/gong_zhu/server.js'))
 };
+
+const gameUtils = require(path.resolve(__dirname, './utils/game_utils.js'));
+const commandParse = require(path.resolve(__dirname, './utils/command_parse.js'));
 
 const app = express();
 const app_port = process.env.PORT || 8080;
@@ -64,18 +67,38 @@ let messageDecoder = {
 	'startGame': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
 		let server = game.gong_zhu.servers[idx];
-		server.gameData = structuredClone(game.gong_zhu.defaultSettings);
+		// server.gameData = structuredClone(game.gong_zhu.defaultSettings);
 		// console.log(server);
 		if (server.connected.length < server.gameData.minPlayers) {
-			broadcastToConnected(server, {
+			ws.send(JSON.stringify({
 				tag: 'broadcastedMessage',
 				data: `Insufficient players ${server.connected.length} < ${server.gameData.minPlayers}`
-			});
+			}));
 			return;
 		}
 
 		game.gong_zhu.initGame(server);
-		broadcastToConnected(server, {tag: 'startedGame', data: server.gameData});
+		// console.log(server.gameData);
+		let serverInfo = structuredClone(server);
+		let gameData = structuredClone(server.gameData); // TODO - obfuscate
+		delete serverInfo.gameData;
+		game.gong_zhu.broadcastToConnected(server, {tag: 'startedGame', data: {gameData: gameData, serverData: serverInfo}});
+	},
+	'sendCommand': (ws, data) => {
+		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		let server = game.gong_zhu.servers[idx];
+		console.log(ws.username);
+		game.gong_zhu.processCommand(data.data, ws, server);
+	},
+	'sendChat': (ws, data) => {
+		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		let server = game.gong_zhu.servers[idx];
+		let msgTime = Date.now();
+		game.gong_zhu.broadcastToConnected(server, {tag: 'receiveChat', data: {
+			username: ws.username,
+			text: data.data,
+			time: msgTime
+		}});
 	}
 };
 
@@ -101,13 +124,19 @@ wss.on('connection', function(ws, req) {
 	}
 
 	ws.on('close', function() {
-		// TODO when host disconnects, pass to someone else
 		console.log('Closed', this.username, this.connected);
 		console.log(game.gong_zhu.servers);
 		if (this.username) game.gong_zhu.removeUser(this.username);
 		if (this.connected) {
 			game.gong_zhu.leaveServer(this, this.connected);
-			broadcastToConnected(this.connected, {tag: 'joinedLobby', status: 1, data: this.connected});
+			if (this.connected.gameData.gameState == '') game.gong_zhu.broadcastToConnected(
+				this.connected,
+				{tag: 'joinedLobby', status: 1, data: this.connected}
+			);
+			else game.gong_zhu.broadcastToConnected(
+				this.connected,
+				{tag: 'otherLeftLobby', status: 1, data: this.connected}
+			)
 		}
 		console.log(game.gong_zhu.servers);
 		for (let ws of wss.clients) {
@@ -117,10 +146,3 @@ wss.on('connection', function(ws, req) {
 });
 
 server.listen(app_port);
-
-function broadcastToConnected(server, data) {
-	for (let username of server.connected) {
-		let ws = game.gong_zhu.users[username];
-		ws.send(JSON.stringify(data));
-	}
-}

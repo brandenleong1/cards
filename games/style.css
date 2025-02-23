@@ -1,0 +1,178 @@
+#loading {
+	display: flex;
+	position: fixed;
+	justify-content: center;
+	align-items: center;
+	top: 0;
+	left: 0;
+	z-index: 100;
+	width: 100vw;
+	height: 100vh;
+	background: var(--color_bg);
+	cursor: wait;
+}
+
+#lobby-select {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 20px;
+	width: 100%;
+}
+
+.lobby-tile {
+	width: 200px;
+	/* height: 250px; */
+	background-color: var(--color_bg2);
+	border-radius: 10px;
+	padding: 10px 20px;
+	row-gap: 0 !important;
+	cursor: pointer;
+}
+
+.lobby-tile .content-header-2 {
+	overflow: hidden;
+	text-wrap: nowrap;
+	text-overflow: ellipsis;
+}
+
+.lobby-tile .content-text {
+	padding: 0;
+	font-size: medium;
+}
+
+.lobby-tile .content-break-vertical {
+	height: 10px;
+}
+
+.lobby-tile:hover {
+	filter: brightness(0.8);
+}
+
+#load-lobby-name {
+	max-width: 300px;
+	overflow-x: hidden;
+	text-wrap: nowrap;
+	text-overflow: ellipsis;
+}
+
+#load-lobby-user-list {
+	width: 500px;
+	max-height: 50vh;
+	padding: 20px 0;
+	overflow-y: auto;
+	row-gap: 5px;
+	background-color: var(--color_bg2);
+}
+
+#load-lobby-user-list .content-text{
+	min-height: fit-content;
+	overflow-x: hidden;
+	text-wrap: nowrap;
+	text-overflow: ellipsis;
+}
+
+#lobby-user-list {
+	padding: 0 20px;
+}
+
+#game input[type=text] {
+	background-color: rgba(0, 0, 0, 0);
+}
+
+#game-gui {
+	background-color: #35654D;
+	width: calc(100% - 40px);
+	height: 0;
+	padding: 20px;
+	flex: 100 1 0;
+	box-shadow: 0 0 40px inset rgba(0, 0, 0, 0.6);
+	color: var(--color_black);
+	border-radius: 10px;
+	overflow: auto;
+	position: relative;
+	content-visibility: auto;
+}
+
+.game-gui-frame {
+	min-width: 100%;
+	min-height: 100%;
+	width: fit-content;
+	height: fit-content;
+}
+
+#game-console, #game-chat {
+	background-color: var(--color_bg2);
+	width: calc(100% - 20px);
+	padding: 10px 10px 0 10px;
+	box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+	border-radius: 10px;
+	overflow-y: auto;
+	overflow-x: hidden;
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	row-gap: 5px;
+}
+
+#game-console .content-header-2, #game-chat .content-header-2 {
+	background-image: linear-gradient(180deg, var(--color_bg2) 20%, transparent 100%);
+	border-radius: 5px;
+	padding-left: 10px;
+	padding-bottom: 10px;
+	position: absolute;
+	width: calc(100% - 10px);
+	top: 0;
+	left: 0;
+}
+
+#game-console-output, #game-chat-output {
+	width: 100%;
+	flex-grow: 1;
+	height: 0;
+	overflow-y: auto;
+	row-gap: 5px;
+	font-size: 0.8em;
+}
+
+#game-console-output::before, #game-chat-output::before {
+	content: '';
+	width: 100%;
+	min-height: 20px;
+}
+
+#game-chat-output > div {
+	display: flex;
+	column-gap: 10px;
+}
+
+#game-chat-output > div :nth-child(1) {
+	flex-grow: 1;
+}
+
+#game-chat-output .username {
+	text-decoration: underline;
+}
+
+#game-chat-output > div :nth-child(2) {
+	color: var(--color_txt2);
+	flex-shrink: 0;
+}
+
+#game-console-output > :nth-child(1), #game-chat-output > :nth-child(1) {
+	margin-top: auto;
+}
+
+#game-console-output *, #game-chat-output * {
+	word-break: break-all;
+	white-space: pre;
+	tab-size: calc(4ch + 4px);
+}
+
+#game-console input[type=text], #game-chat input[type=text] {
+	box-shadow: none !important;
+}
+
+.debug:not(.shown) {
+	display: none;
+}

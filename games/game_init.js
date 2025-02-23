@@ -15,7 +15,7 @@ async function init() {
 
 	document.querySelector('#help').onclick = () => {Popup.popup(document.querySelector('#popup-help'))};
 	document.querySelector('#settings').onclick = () => {Popup.popup(document.querySelector('#popup-settings'))};
-	
+
 	document.querySelector('#submit-username-btn').addEventListener('click', submitUsername);
 	document.querySelector('#submit-username-btn').parentElement.querySelector('input').addEventListener('keypress', function(e) {
 		if (e.key == 'Enter') {
@@ -25,14 +25,24 @@ async function init() {
 	});
 
 	document.querySelector('#console-size-slider').addEventListener('input', function() {
-		// x / 100 = flexGrow / (flexGrow + 100)
-		// x (flexGrow + 100) = 100 * flexGrow
-		// x * flexGrow + 100x = 100 * flexGrow
-		// (x - 100) * flexGrow = -100x
-		// flexGrow = (-100x) / (x - 100)
-		// flexGrow = (100x) / (100 - x)
 		let x = parseInt(this.value, 10);
 		document.querySelector('#game-console').style.flexGrow = Math.floor((100 * x) / (100 - x));
+	});
+	document.querySelector('#chat-size-slider').addEventListener('input', function() {
+		let x = parseInt(this.value, 10);
+		document.querySelector('#game-chat').style.flexGrow = Math.floor((100 * x) / (100 - x));
+	});
+	document.querySelector('#game-console-input').addEventListener('keypress', function(e) {
+		if (e.key == 'Enter') {
+			e.preventDefault();
+			sendCommand();
+		}
+	});
+	document.querySelector('#game-chat-input').addEventListener('keypress', function(e) {
+		if (e.key == 'Enter') {
+			e.preventDefault();
+			sendChat();
+		}
 	});
 
 	initWebSocket();

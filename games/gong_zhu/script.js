@@ -2,7 +2,6 @@ let ws;
 // let ws = new WebSocket('ws' + window.location.href.substring(window.location.href.indexOf(':')));
 
 let username;
-let server;
 let handlers = {};
 
 let messageDecoder = {
@@ -12,16 +11,23 @@ let messageDecoder = {
 	'updateLobbies':		(data) => {updateLobbies(data);},
 	'createdLobby':			(data) => {joinLobby(data);},
 	'joinedLobby':			(data) => {showLobby(data);},
-	'leftLobby':			(data) => {leftLobby(data);}
+	'leftLobby':			(data) => {leftLobby(data);},
+	'otherLeftLobby':		(data) => {otherLeftLobby(data);},
+	'startedGame':			(data) => {startedGame(data);},
+	'receiveCommand':		(data) => {receiveCommand(data);},
+	'receiveChat':			(data) => {receiveChat(data);},
+	'updateGUI':			(data) => {drawGUI(data);},
+	'toggleDebug':			(data) => {toggleDebug(data);}
 };
 
 
 function initWebSocket() {
 	ws = new WebSocket('http://localhost:8080');
+	// ws = new WebSocket('https://fxvw5vx2-8080.usw3.devtunnels.ms/');
 
 	ws.addEventListener('message', function(message) {
-		console.log(message);
-	
+		// console.log(message);
+
 		let data = JSON.parse(message.data);
 		let tags = data.tag.split('/');
 		let func;
@@ -31,7 +37,7 @@ function initWebSocket() {
 		}
 		if (func) func(data);
 	});
-	
+
 	ws.addEventListener('error', function(e) {
 		console.log('WebSocket error:', e);
 		Popup.toastPopup('WebSocket error');
@@ -68,14 +74,14 @@ function receiveUsername(data) {
 	if (!data.status) {
 		Popup.toastPopup(data.data);
 	} else {
-		let parent = btn.parentElement;
+		let parent = document.querySelector('#username-div');
 		Utils.clearDiv(parent);
 		let div = document.createElement('div');
 		div.classList.add('content-header-2');
 		div.innerHTML = 'Playing as: <span style="color: var(--color_red);">' + data.data + '</span>';
 		parent.appendChild(div);
 		username = data.data;
-		
+
 		getLobbies();
 		handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
 
@@ -93,16 +99,20 @@ function updateUserCount(data) {
 	document.querySelector('#player-count span').innerText = data.data;
 }
 
-function parseTime(time) {
-	let date = new Date(time);
+function parseTime(timeMs, date = true, time = true) {
+	let dateTime = new Date(timeMs);
 
-	let year = date.getFullYear().toString(10).substring(2);
-	let month = (date.getMonth() + 1).toString(10).padStart(2, '0');
-	let day = date.getDate().toString(10).padStart(2, '0');
-	let hour = date.getHours().toString(10).padStart(2, '0');
-	let minutes = date.getMinutes().toString(10).padStart(2, '0');
+	let year = dateTime.getFullYear().toString(10).substring(2);
+	let month = (dateTime.getMonth() + 1).toString(10).padStart(2, '0');
+	let day = dateTime.getDate().toString(10).padStart(2, '0');
+	let hour = dateTime.getHours().toString(10).padStart(2, '0');
+	let minutes = dateTime.getMinutes().toString(10).padStart(2, '0');
 
-	return month + '/' + day + '/' + year + ' ' + hour + ':' + minutes;
+	let str = '';
+	if (date) str += month + '/' + day + '/' + year;
+	if (time) str += (date ? ' ' : '') + hour + ':' + minutes;
+
+	return str;
 }
 
 function updateLobbies(data) {
@@ -117,7 +127,7 @@ function updateLobbies(data) {
 	}
 
 	for (let server of data.data) {
-		console.log(server);
+		// console.log(server);
 		let container = document.createElement('div');
 		container.classList.add('lobby-tile', 'content-container-vertical');
 
@@ -139,7 +149,7 @@ function updateLobbies(data) {
 		let div5 = document.createElement('div');
 		div5.classList.add('content-text');
 		div5.innerText = 'By: ' + server.creator;
-		
+
 		let div6 = document.createElement('div');
 		div6.classList.add('content-text');
 		div6.innerText = 'Host: ' + server.host;
@@ -209,11 +219,12 @@ function showLobby(data) {
 	document.querySelector('#popup-create-lobby').parentNode.click();
 	document.querySelector('#popup-load-lobby').parentNode.click();
 
+	document.querySelector('#username-div').style.display = 'none';
 	document.querySelector('#lobby-menu').style.display = 'none';
 	document.querySelector('#lobby').style.display = null;
 
 	// console.log('Joined Lobby', data);
-	server = data.data;
+	let server = data.data;
 	document.querySelector('#lobby-name').innerText = 'Lobby [' + server.name + ']';
 	document.querySelector('#lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 	document.querySelector('#lobby-host').innerText = 'Host: ' + server.host;
@@ -246,16 +257,157 @@ function leftLobby(data) {
 	getLobbies();
 	handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
 
+	document.querySelector('#username-div').style.display = null;
 	document.querySelector('#lobby-menu').style.display = null;
 	document.querySelector('#lobby').style.display = 'none';
+}
+
+function otherLeftLobby(data) {
+	document.querySelector('#title').style.display = null;
+	document.querySelector('#lobby').style.display = null;
+	document.querySelector('#game').style.display = 'none';
+	Popup.toastPopup('Player disconnected, returning to lobby...');
+	showLobby(data);
 }
 
 function startGame() {
 	ws.send(JSON.stringify({tag: 'startGame'}));
 }
 
-function startedGame(data) { // TODO Init Game
+function startedGame(data) {
 	document.querySelector('#title').style.display = 'none';
 	document.querySelector('#lobby').style.display = 'none';
 	document.querySelector('#game').style.display = null;
+	drawGUI(data);
+}
+
+function sendCommand() {
+	let data = document.querySelector('#game-console-input').value.trim();
+	if (data) {
+		let code = document.createElement('code');
+		code.innerText = '>> ' + data;
+		document.querySelector('#game-console-output').appendChild(code);
+		ws.send(JSON.stringify({tag: 'sendCommand', data: data}));
+		document.querySelector('#game-console-input').value = '';
+	}
+}
+
+function receiveCommand(data) {
+	let output = document.querySelector('#game-console-output');
+	console.log(data.data);
+	for (let log of data.data) {
+		let code = document.createElement('code');
+		if (!data.status) code.style.color = 'var(--color_red)';
+		code.textContent = log;
+		output.appendChild(code);
+		code.scrollIntoView({behavior: 'smooth', block: 'end'});
+	}
+}
+
+function sendChat() {
+	let data = document.querySelector('#game-chat-input').value.trim();
+	if (data) {
+		ws.send(JSON.stringify({tag: 'sendChat', data: data}));
+		document.querySelector('#game-chat-input').value = '';
+	}
+}
+
+function receiveChat(data) {
+	let output = document.querySelector('#game-chat-output');
+
+	let div = document.createElement('div');
+	let span1 = document.createElement('span');
+
+	let span1Username = document.createElement('b');
+	span1Username.classList.add('username');
+	span1Username.innerText = data.data.username;
+	span1.appendChild(span1Username);
+
+	let span1Text = document.createElement('span');
+	span1Text.textContent = '\u00A0\u00A0' + data.data.text;
+	span1.appendChild(span1Text);
+	div.appendChild(span1);
+
+	let span2 = document.createElement('span');
+	span2.innerText = parseTime(data.data.time, date = false);
+	div.appendChild(span2);
+	output.appendChild(div);
+	if (!Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight)) div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+function drawGUI(data) { // TODO
+	console.log('drawGUI', data);
+	
+	let gameData = data.data.gameData;
+	let server = data.data.serverData;
+
+	// Clear GUI
+	let leaderboard = document.querySelector('#game-gui-leaderboard');
+
+	Utils.clearDiv(document.querySelector('#game-gui-hands-self'));
+	Utils.clearDiv(document.querySelector('#game-gui-hands'));
+	Utils.clearDiv(leaderboard);
+
+	// Show proper frame
+	if (
+		gameData.gameState == 'LEADERBOARD' || 
+		gameData.gameState == 'SCORE'
+	) {
+		document.querySelector('#game-gui-frame-game').style.display = 'none';
+		document.querySelector('#game-gui-frame-leaderboard').style.display = null;
+
+		if (gameData.gameState == 'LEADERBOARD') {
+			document.querySelector('#game-gui-help-next-round').style.display = 'none';
+			document.querySelector('#game-gui-help-next-game').style.display = null;
+		} else {
+			document.querySelector('#game-gui-help-next-round').style.display = null;
+			document.querySelector('#game-gui-help-next-game').style.display = 'none';
+		}
+	} else {
+		document.querySelector('#game-gui-frame-game').style.display = null;
+		document.querySelector('#game-gui-frame-leaderboard').style.display = 'none';
+	}
+
+	// Init values
+	document.querySelector('#game-gui-round-count').innerText = gameData.round;
+	document.querySelector('#game-gui-limit-count').innerText = gameData.losingThreshold;
+	document.querySelector('#game-gui-game-state').innerText = gameData.gameState;
+
+	let absMaxScore = Math.abs(gameData.scores[0]);
+	for (let i of gameData.scores) {
+		if (Math.abs(i) > absMaxScore) absMaxScore = Math.abs(i);
+	}
+
+	for (let i = 0; i < gameData.turnOrder.length; i++) {
+		let div1 = document.createElement('div');
+		div1.classList.add('player-' + i);
+		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
+
+		for (let j = 0; j < 3; j++) {
+			let div2 = document.createElement('div');
+			div2.classList.add('content-container-text');
+			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+
+			if (j == 0) {
+				if (username == gameData.turnOrder[i]) div2.innerText = '⭐';
+			} else if (j == 1) {
+				div2.innerText = gameData.turnOrder[i];
+			} else {
+				div2.innerText = gameData.scores[i];
+				let percent = Math.abs(gameData.scores[i]) / absMaxScore * 100;
+				div2.style.color = 'color-mix(in srgb, var(--color_' + ((gameData.scores[i] < 0) ? 'red' : 'green') + ') ' + percent + '%, var(--color_black))';
+			}
+			div1.appendChild(div2);
+		}
+		leaderboard.appendChild(div1);
+	}
+
+	for (let e of document.querySelectorAll('.game-gui-server-owner')) e.innerText = server.host;
+}
+
+function toggleDebug(data) {
+	let debugElements = document.querySelectorAll('.debug');
+	for (let e of debugElements) {
+		e.classList.toggle('shown');
+	}
 }

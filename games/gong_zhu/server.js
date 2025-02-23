@@ -1,7 +1,6 @@
-// const Utils = require(path.resolve(__dirname, '../utils.js')).Utils;
-
-import * as Utils from '../utils/utils.js';
-import * as GameUtils from '../utils/game_utils.js';
+import * as Utils from '../../utils/utils.js';
+import * as GameUtils from '../../utils/game_utils.js';
+import * as CommandParse from '../../utils/command_parse.js';
 
 export let users = new Map(); // Username => WS
 let usernames = new Map();
@@ -16,9 +15,10 @@ export const defaultSettings = {
 	maxPlayers: 4,
 	turnOrder: [],
 	hands: [],
-	discard: [],
+	stacks: [],
 	losingThreshold: -1000,
 	scores: [],
+	round: 0,
 };
 
 
@@ -51,7 +51,7 @@ export function removeUser(username) {
 
 export function addServer(data) {
 	data.connected = [];
-	data.gameData = {};
+	data.gameData = structuredClone(defaultSettings);
 	let idx = Utils.binaryInsert(servers, data, function(a, b) {
 		if (a.time != b.time) return b.time - a.time;
 		else if (a.name != b.name) return a.name.localeCompare(b.name);
@@ -115,18 +115,19 @@ export function initGame(server) {
 		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i]);
 	}
 
-	let turnOrder = new Array(server.connected.length).fill(0).map((e, i) => i);
 	for (let i = 0; i < server.connected.length; i++) {
 		gameData.hands.push(new Array());
+		for (let j = 0; j < 2; j++) gameData.hands[i].push(new Array());
 		gameData.scores.push(0);
 	}
-	gameData.turnOrder = Utils.shuffleArray(turnOrder);
+	gameData.turnOrder = Utils.shuffleArray(server.connected);
 
-	gameData.gameState = 'DEAL_3';
-	gameOFL(server);
+	gameData.gameState = 'LEADERBOARD';
+	gameData.round = 1;
+	// gameOFL(server);
 }
 
-async function gameServerNSL(server) {
+export async function gameServerNSL(server) {
 	if (server.gameData.gameState == 'DEAL_3') {
 		await Utils.sleep(2000);
 		server.gameData.gameState = 'SHOW_3';
@@ -141,7 +142,7 @@ async function gameServerNSL(server) {
 			server.gameData.gameState = 'LEADERBOARD';
 		}
 	}
-	gameOFL(server);
+	// gameOFL(server);
 }
 
 export function gameClientNSL(server) {
@@ -156,7 +157,7 @@ export function gameClientNSL(server) {
 	} else if (server.gameData.gameState == 'PLAY_3') {
 		server.gameData.gameState = 'PLAY_4';
 	} else if (server.gameData.gameState == 'PLAY_4') {
-		if (server.gameData.hands.every(e => !e.length)) {
+		if (server.gameData.hands.every(e => !e.flat().length)) {
 			server.gameData.gameState = 'SCORE';
 		} else {
 			server.gameData.gameState = 'PLAY_1';
@@ -164,10 +165,10 @@ export function gameClientNSL(server) {
 	} else if (server.gameData.gameState == 'LEADERBOARD') {
 		server.gameData.gameState = 'DEAL_3';
 	}
-	gameOFL(server);
+	// gameOFL(server);
 }
 
-function gameOFL(server) { // TODO OFL
+function gameOFL(server) { // TODO OFL (may not even need this?)
 	let state = server.gameData.gameState;
 	if (state == 'DEAL_3') {
 
@@ -189,5 +190,72 @@ function gameOFL(server) { // TODO OFL
 
 	} else if (state == 'LEADERBOARD') {
 
+	}
+}
+
+export function processCommand(data, ws, server) {
+	let command = CommandParse.parseCommand(data);
+	console.log(command);
+	let ret = [];
+	let status = 1;
+
+	switch (command.command[0].toLowerCase()) {
+		case 'help':
+			let str = '';
+			str += 'HELP - display help menu\n';
+			if (ws.username == server.host) str += 'EXIT - exit back to lobby\n';
+			if (ws.username == server.host) str += 'DEAL - start round\n';
+			str += 'SORT - sorts hand in the specified order\n';
+				str += '\t- unspecified cards retain their order\n';
+				str += '\tSORT [order]\n';
+					str += '\t\te.g. SORT "1 2 7 3 0"\n';
+			str += 'SWAP - swap two cards in your hand\n';
+				str += '\tSWAP [idxA] [idxB]\n';
+					str += '\t\te.g. SWAP 5 6\n';
+			str += 'PLAY - play card(s)\n';
+				str += '\t- can also be used in the "SHOW" phase to show cards\n';
+				str += '\tPLAY [cards]\n';
+				str += '\t\te.g. PLAY "4 1"\n';
+			str += 'PASS - pass a play (in the "SHOW" phase)\n';
+			str += 'DEBUG - show debug elements\n';
+			ret.push(str.slice(0, -1));
+			break;
+		case 'exit':	// TODO
+			break;
+		case 'deal':	// TODO
+			if (ws.username == server.host) {
+				gameClientNSL(server);
+				let serverInfo = structuredClone(server);
+				let gameData = structuredClone(server.gameData); // TODO - obfuscate
+				delete serverInfo.gameData;
+				broadcastToConnected(server, {
+					tag: 'updateGUI',
+					data: {gameData: gameData, serverData: serverInfo}
+				});
+				break;
+			}
+		case 'sort':	// TODO
+			break;
+		case 'swap':	// TODO
+			break;
+		case 'play':	// TODO
+			break;
+		case 'pass':	// TODO
+			break;
+		case 'debug':
+			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret}));
+			break;
+		default:
+			ret.push('Unknown command [' + command.command + ']');
+			status = 0;
+	}
+
+	ws.send(JSON.stringify({tag: 'receiveCommand', status: status, data: ret}));
+}
+
+export function broadcastToConnected(server, data) {
+	for (let username of server.connected) {
+		let ws = users[username];
+		ws.send(JSON.stringify(data));
 	}
 }

@@ -1,9 +1,5 @@
-function reqListener (data) {
-	console.log(data);
-}
-
 document.querySelector('#game-gong-zhu-btn').onclick = function() {
-	window.location = './games/game_gong_zhu.html';
+	window.location = './games/gong_zhu/gong_zhu.html';
 	// console.log(window.location);
 
 	// let xhr = new XMLHttpRequest();
