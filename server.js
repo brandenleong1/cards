@@ -9,6 +9,7 @@ const game = {
 
 const gameUtils = require(path.resolve(__dirname, './utils/game_utils.js'));
 const commandParse = require(path.resolve(__dirname, './utils/command_parse.js'));
+const Utils = require(path.resolve(__dirname, './utils/utils.js'))
 
 const app = express();
 const app_port = process.env.PORT || 8080;
@@ -82,19 +83,26 @@ let messageDecoder = {
 		let serverInfo = structuredClone(server);
 		let gameData = structuredClone(server.gameData); // TODO - obfuscate
 		delete serverInfo.gameData;
-		game.gong_zhu.broadcastToConnected(server, {tag: 'startedGame', data: {gameData: gameData, serverData: serverInfo}});
+		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', data: {gameData: gameData, serverData: serverInfo}});
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
 		let server = game.gong_zhu.servers[idx];
 		console.log(ws.username);
-		game.gong_zhu.processCommand(data.data, ws, server);
+
+		let res = game.gong_zhu.processCommand(data.data, ws, server);
+		let resToAll = structuredClone(res);
+		resToAll.data = res.data.filter(e => e[1] == 1).map(e => e[0]);
+		res.data = res.data.map(e => e[0]);
+
+		ws.send(JSON.stringify(res));
+		Utils.broadcastToConnected(game.gong_zhu.users, server, resToAll, ws.username);
 	},
 	'sendChat': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
 		let server = game.gong_zhu.servers[idx];
 		let msgTime = Date.now();
-		game.gong_zhu.broadcastToConnected(server, {tag: 'receiveChat', data: {
+		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'receiveChat', data: {
 			username: ws.username,
 			text: data.data,
 			time: msgTime
@@ -129,11 +137,11 @@ wss.on('connection', function(ws, req) {
 		if (this.username) game.gong_zhu.removeUser(this.username);
 		if (this.connected) {
 			game.gong_zhu.leaveServer(this, this.connected);
-			if (this.connected.gameData.gameState == '') game.gong_zhu.broadcastToConnected(
+			if (this.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
 				this.connected,
 				{tag: 'joinedLobby', status: 1, data: this.connected}
 			);
-			else game.gong_zhu.broadcastToConnected(
+			else Utils.broadcastToConnected(game.gong_zhu.users, 
 				this.connected,
 				{tag: 'otherLeftLobby', status: 1, data: this.connected}
 			)

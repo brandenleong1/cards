@@ -2,6 +2,8 @@ let ws;
 // let ws = new WebSocket('ws' + window.location.href.substring(window.location.href.indexOf(':')));
 
 let username;
+let gameDataOld, gameDataNew;
+let animatingGUI = false;
 let handlers = {};
 
 let messageDecoder = {
@@ -17,6 +19,7 @@ let messageDecoder = {
 	'receiveCommand':		(data) => {receiveCommand(data);},
 	'receiveChat':			(data) => {receiveChat(data);},
 	'updateGUI':			(data) => {drawGUI(data);},
+	'clearConsole':			(data) => {Utils.clearDiv(document.querySelector('#game-console-output'));},
 	'toggleDebug':			(data) => {toggleDebug(data);}
 };
 
@@ -50,7 +53,7 @@ function initWebSocket() {
 		let div = document.createElement('div');
 		div.classList.add('content-text');
 		div.innerText = 'WebSocket connection error, try again another time.';
-		document.body.appendChild(div);
+		document.body.append(div);
 	});
 }
 
@@ -79,7 +82,7 @@ function receiveUsername(data) {
 		let div = document.createElement('div');
 		div.classList.add('content-header-2');
 		div.innerHTML = 'Playing as: <span style="color: var(--color_red);">' + data.data + '</span>';
-		parent.appendChild(div);
+		parent.append(div);
 		username = data.data;
 
 		getLobbies();
@@ -115,6 +118,15 @@ function parseTime(timeMs, date = true, time = true) {
 	return str;
 }
 
+async function showCreateLobbyPopup() {
+	await Popup.popup(document.querySelector('#popup-create-lobby'));
+	let btn = document.querySelector('#popup-create-lobby').querySelector('.button-positive-2');
+	btn.onclick = function() {
+		this.onclick = null;
+		createLobby();
+	};
+}
+
 function updateLobbies(data) {
 	let lobbySelect = document.querySelector('#lobby-select');
 	Utils.clearDiv(lobbySelect);
@@ -123,7 +135,7 @@ function updateLobbies(data) {
 		let div = document.createElement('div');
 		div.classList.add('content-text');
 		div.innerText = 'No lobbies available. Create your own!';
-		lobbySelect.appendChild(div);
+		lobbySelect.append(div);
 	}
 
 	for (let server of data.data) {
@@ -154,13 +166,13 @@ function updateLobbies(data) {
 		div6.classList.add('content-text');
 		div6.innerText = 'Host: ' + server.host;
 
-		[div1, div2, div3, div4, div5, div6].forEach(e => container.appendChild(e));
+		[div1, div2, div3, div4, div5, div6].forEach(e => container.append(e));
 
-		lobbySelect.appendChild(container);
+		lobbySelect.append(container);
 		container.data = server;
 
 		let popup = document.querySelector('#popup-load-lobby');
-		container.onclick = function() {
+		container.onclick = async function() {
 			document.querySelector('#load-lobby-name').innerText = server.name;
 			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 			document.querySelector('#load-lobby-host').innerText = 'Host: ' + server.host;
@@ -172,14 +184,17 @@ function updateLobbies(data) {
 				let div = document.createElement('div');
 				div.classList.add('content-text');
 				div.innerText = (user == server.host ? '⭐ ' : '') + user;
-				list.appendChild(div);
+				list.append(div);
 			}
 
+			await Popup.popup(popup);
+
 			popup.querySelector('.button-positive-2').onclick = function() {
+				this.onclick = null;
+				console.log(this);
+				this.parentNode.parentNode.click();
 				ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
 			};
-
-			Popup.popup(popup);
 		};
 	}
 
@@ -222,8 +237,8 @@ function showLobby(data) {
 	document.querySelector('#username-div').style.display = 'none';
 	document.querySelector('#lobby-menu').style.display = 'none';
 	document.querySelector('#lobby').style.display = null;
+	document.querySelector('#game').style.display = 'none';
 
-	// console.log('Joined Lobby', data);
 	let server = data.data;
 	document.querySelector('#lobby-name').innerText = 'Lobby [' + server.name + ']';
 	document.querySelector('#lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
@@ -238,7 +253,7 @@ function showLobby(data) {
 		let div = document.createElement('div');
 		div.classList.add('content-text');
 		div.innerText = (user == server.host ? '⭐ ' : '') + user + (user == username ? ' ⇐ You' : '');
-		list.appendChild(div);
+		list.append(div);
 	}
 
 	if (handlers['lobbyRefresh']) clearInterval(handlers['lobbyRefresh']);
@@ -278,6 +293,9 @@ function startedGame(data) {
 	document.querySelector('#title').style.display = 'none';
 	document.querySelector('#lobby').style.display = 'none';
 	document.querySelector('#game').style.display = null;
+
+	Utils.clearDiv(document.querySelector('#game-console-output'));
+	Utils.clearDiv(document.querySelector('#game-chat-output'));
 	drawGUI(data);
 }
 
@@ -286,9 +304,10 @@ function sendCommand() {
 	if (data) {
 		let code = document.createElement('code');
 		code.innerText = '>> ' + data;
-		document.querySelector('#game-console-output').appendChild(code);
+		document.querySelector('#game-console-output').append(code);
 		ws.send(JSON.stringify({tag: 'sendCommand', data: data}));
 		document.querySelector('#game-console-input').value = '';
+		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}
 }
 
@@ -299,7 +318,7 @@ function receiveCommand(data) {
 		let code = document.createElement('code');
 		if (!data.status) code.style.color = 'var(--color_red)';
 		code.textContent = log;
-		output.appendChild(code);
+		output.append(code);
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}
 }
@@ -321,32 +340,45 @@ function receiveChat(data) {
 	let span1Username = document.createElement('b');
 	span1Username.classList.add('username');
 	span1Username.innerText = data.data.username;
-	span1.appendChild(span1Username);
+	span1.append(span1Username);
 
 	let span1Text = document.createElement('span');
 	span1Text.textContent = '\u00A0\u00A0' + data.data.text;
-	span1.appendChild(span1Text);
-	div.appendChild(span1);
+	span1.append(span1Text);
 
 	let span2 = document.createElement('span');
 	span2.innerText = parseTime(data.data.time, date = false);
-	div.appendChild(span2);
-	output.appendChild(div);
+
+	div.append(span1, span2);
+	output.append(div);
 	if (!Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight)) div.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
-function drawGUI(data) { // TODO
+async function drawGUI(data) { // TODO
 	console.log('drawGUI', data);
-	
+
 	let gameData = data.data.gameData;
 	let server = data.data.serverData;
 
+	if (animatingGUI) {
+		gameDataNew = gameData;
+		return;
+	}
+
+	if (gameDataOld && gameDataOld.gameState != gameData.gameState) {
+		animatingGUI = true;
+	}
+
 	// Clear GUI
 	let leaderboard = document.querySelector('#game-gui-leaderboard');
+	let handsSelf = document.querySelector('#game-gui-hands-self');
+	let hands = document.querySelector('#game-gui-hands');
+	let shownCards = document.querySelector('#game-gui-shown-cards');
 
-	Utils.clearDiv(document.querySelector('#game-gui-hands-self'));
-	Utils.clearDiv(document.querySelector('#game-gui-hands'));
 	Utils.clearDiv(leaderboard);
+	Utils.clearDiv(handsSelf);
+	Utils.clearDiv(hands);
+	Utils.clearDiv(shownCards);
 
 	// Show proper frame
 	if (
@@ -368,7 +400,7 @@ function drawGUI(data) { // TODO
 		document.querySelector('#game-gui-frame-leaderboard').style.display = 'none';
 	}
 
-	// Init values
+	// Initialize values
 	document.querySelector('#game-gui-round-count').innerText = gameData.round;
 	document.querySelector('#game-gui-limit-count').innerText = gameData.losingThreshold;
 	document.querySelector('#game-gui-game-state').innerText = gameData.gameState;
@@ -378,6 +410,7 @@ function drawGUI(data) { // TODO
 		if (Math.abs(i) > absMaxScore) absMaxScore = Math.abs(i);
 	}
 
+	let myIdx;
 	for (let i = 0; i < gameData.turnOrder.length; i++) {
 		let div1 = document.createElement('div');
 		div1.classList.add('player-' + i);
@@ -389,7 +422,10 @@ function drawGUI(data) { // TODO
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
 
 			if (j == 0) {
-				if (username == gameData.turnOrder[i]) div2.innerText = '⭐';
+				if (username == gameData.turnOrder[i]) {
+					div2.innerText = '⭐';
+					myIdx = i;
+				}
 			} else if (j == 1) {
 				div2.innerText = gameData.turnOrder[i];
 			} else {
@@ -397,12 +433,104 @@ function drawGUI(data) { // TODO
 				let percent = Math.abs(gameData.scores[i]) / absMaxScore * 100;
 				div2.style.color = 'color-mix(in srgb, var(--color_' + ((gameData.scores[i] < 0) ? 'red' : 'green') + ') ' + percent + '%, var(--color_black))';
 			}
-			div1.appendChild(div2);
+			div1.append(div2);
 		}
-		leaderboard.appendChild(div1);
+		leaderboard.append(div1);
+	}
+
+	let playableCards = {};
+	switch (gameData.gameState) {
+		case 'SHOW_3':
+		case 'SHOW_ALL':
+			[11, 13, 36, 48].filter(e => gameData.stacks[1].findIndex(e1 => e1[0] == e) == -1).forEach(e => playableCards[e] = 1);
+			break;
+		case 'PLAY_0':	// TODO
+			break;
+		case 'PLAY_1':	// TODO
+			break;
+		case 'PLAY_2':	// TODO
+			break;
+		case 'PLAY_3':	// TODO
+			break;
+	}
+	for (let i = 0; i < gameData.hands[myIdx][0].length; i++) {
+		let card = gameData.hands[myIdx][0][i];
+
+		let div1 = document.createElement('div');
+
+		let div2 = document.createElement('div');
+		div2.innerText = i;
+		if (gameData.hands[myIdx][1].indexOf(card) != -1) div2.style.color = 'var(--color_red)';
+		let div3 = document.createElement('div');
+		div3.innerText = Cards.card2Unicode(card);
+
+		if (!playableCards[card]) div1.classList.add('unplayable');
+
+		div1.append(div2, div3);
+		handsSelf.append(div1);
+	}
+
+	for (let i = 0; i < gameData.turnOrder.length; i++) {
+		let div1 = document.createElement('div');
+		div1.classList.add('player-' + i);
+		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
+
+		for (let j = 0; j < 6; j++) {
+			let div2 = document.createElement('div');
+			div2.classList.add('content-container-text');
+			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+
+			if (j == 0) {
+				if (gameData.gameState == 'SHOW_3' || gameData.gameState == 'SHOW_ALL') {
+					if (gameData.needToAct[i]) {
+						div2.innerText = '✘';
+						div2.style.color = 'var(--color_red)';
+					} else {
+						div2.innerText = '✔';
+						div2.style.color = 'var(--color_green)';
+					}
+				} else if (gameData.gameState == 'PLAY_' + i) {
+					div2.innerText = '>>';
+				}
+			} else if (j == 1) {
+				if (username == gameData.turnOrder[i]) {
+					div2.innerText = '⭐';
+					myIdx = i;
+				}
+			} else if (j == 2) {
+				div2.innerText = gameData.turnOrder[i];
+			} else if (j == 3){
+				div2.innerText = '🂠' + gameData.hands[i][0].length;
+			} else if (j == 4) {
+				div2.innerText = gameData.hands[i][1].map(e => Cards.card2Unicode(e)).join('');
+			} else if (j == 5) {
+				div2.style.fontSize = '1.5em';
+				div2.innerText = gameData.hands[i][2].map(e => Cards.card2Unicode(e)).join('');
+			}
+			div1.append(div2);
+		}
+		hands.append(div1);
+	}
+
+	for (let e of gameData.stacks[1]) {
+		let div1 = document.createElement('div');
+
+		let div2 = document.createElement('div');
+		div2.innerText = Cards.card2Unicode(e[0]);
+		let div3 = document.createElement('div');
+		div3.innerText = '(x' + e[1] + ')';
+
+		div1.append(div2, div3);
+		shownCards.append(div1);
 	}
 
 	for (let e of document.querySelectorAll('.game-gui-server-owner')) e.innerText = server.host;
+
+	if (animatingGUI) {
+		animatingGUI = false;
+		drawGUI({data: {gameData: gameDataNew, serverData: server}});
+	}
+
 }
 
 function toggleDebug(data) {

@@ -52,7 +52,7 @@ export function saveFile(text, fileName) {
 		let a = document.createElement('a');
 		let url = URL.createObjectURL(file);
 		a.href = url;
-		document.body.appendChild(a);
+		document.body.append(a);
 		a.setAttribute('download', fileName);
 		a.click();
 		setTimeout(function() {
@@ -94,7 +94,7 @@ export function binaryInsert(list, item, compareFn = (a, b) => a - b) {
 	let left = 0, right = list.length;
 	let mid = 0;
 	let compRes = 0;
-	
+
 	while (left < right) {
 		mid = Math.floor((left + right) / 2);
 		compRes = compareFn(list[mid], item);
@@ -130,4 +130,45 @@ export function transpose2DArray(arr) {
 // a: number, b: number, t: number
 export function lerp(a, b, t) {
 	return a + t * (b - a);
+}
+
+// arr: Array[any], indices: Array[int]
+export function sortArray(arr, indices) {
+	let newArr = [];
+	let visited = (new Array(arr.length)).fill(0);
+	for (let i of indices) {
+		visited[i] = 1;
+		newArr.push(arr[i]);
+	}
+	for (let i = 0; i < visited.length; i++) {
+		if (!visited[i]) newArr.push(arr[i]);
+	}
+	return newArr;
+}
+
+export function broadcastToConnected(users, server, data, ...ignoredUsernames) {
+	for (let username of server.connected) {
+		let ws = users[username];
+		if (!ignoredUsernames.includes(username)) ws.send(JSON.stringify(data));
+	}
+}
+
+export function broadcastGameStateToConnected(users, server) {
+	let serverInfo = structuredClone(server);
+	let gameData = structuredClone(server.gameData); // TODO - obfuscate
+	delete serverInfo.gameData;
+	broadcastToConnected(users, server, {
+		tag: 'updateGUI',
+		data: {gameData: gameData, serverData: serverInfo}
+	});
+}
+
+export function broadcastGameState(ws, server) {
+	let serverInfo = structuredClone(server);
+	let gameData = structuredClone(server.gameData); // TODO - obfuscate
+	delete serverInfo.gameData;
+	ws.send(JSON.stringify({
+		tag: 'updateGUI',
+		data: {gameData: gameData, serverData: serverInfo}
+	}));
 }

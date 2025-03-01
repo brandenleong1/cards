@@ -9,14 +9,15 @@ export let servers = [];
 
 export const defaultSettings = {
 	gameState: '',
-	decks: [],
 	numDecks: 1,
 	minPlayers: 4,
 	maxPlayers: 4,
-	turnOrder: [],
-	hands: [],
-	stacks: [],
 	losingThreshold: -1000,
+	decks: [],
+	turnOrder: [],
+	needToAct: [],
+	hands: [],					// [hidden, shown, played] * numPlayers
+	stacks: [[], []],			// discard, [shown, val]
 	scores: [],
 	round: 0,
 };
@@ -108,8 +109,25 @@ export function leaveServer(ws, serverData) {
 	}
 }
 
+export function clearGameData(server) {
+	let properties = [
+		'gameState',
+		'decks',
+		'turnOrder',
+		'needToAct',
+		'hands',
+		'stacks',
+		'scores'
+	];
+	for (let property of properties) {
+		server.gameData[property] = structuredClone(defaultSettings[property]);
+	}
+}
+
 export function initGame(server) {
+	clearGameData(server);
 	let gameData = server.gameData;
+
 	for (let i = 0; i < gameData.numDecks; i++) {
 		gameData.decks.push(GameUtils.initDeck());
 		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i]);
@@ -117,66 +135,57 @@ export function initGame(server) {
 
 	for (let i = 0; i < server.connected.length; i++) {
 		gameData.hands.push(new Array());
-		for (let j = 0; j < 2; j++) gameData.hands[i].push(new Array());
+		for (let j = 0; j < 3; j++) gameData.hands[i].push(new Array());
 		gameData.scores.push(0);
+		gameData.needToAct.push(0);
 	}
 	gameData.turnOrder = Utils.shuffleArray(server.connected);
 
 	gameData.gameState = 'LEADERBOARD';
 	gameData.round = 1;
-	// gameOFL(server);
+	gameOFL(server);
 }
 
-export async function gameServerNSL(server) {
-	if (server.gameData.gameState == 'DEAL_3') {
-		await Utils.sleep(2000);
-		server.gameData.gameState = 'SHOW_3';
-	} else if (server.gameData.gameState == 'DEAL_ALL') {
-		await Utils.sleep(2000);
-		server.gameData.gameState = 'SHOW_ALL';
-	} else if (server.gameData.gameState == 'SCORE') {
-		await Utils.sleep(10000);
-		if (server.gameData.scores.every(e => e > server.gameData.losingThreshold)) {
-			server.gameData.gameState = 'DEAL_3';
-		} else {
-			server.gameData.gameState = 'LEADERBOARD';
-		}
-	}
-	// gameOFL(server);
-}
-
-export function gameClientNSL(server) {
+function gameNSL(server) {
 	if (server.gameData.gameState == 'SHOW_3') {
-		server.gameData.gameState = 'DEAL_ALL';
+		server.gameData.gameState = 'SHOW_ALL';
 	} else if (server.gameData.gameState == 'SHOW_ALL') {
+		server.gameData.gameState = 'PLAY_0';
+	} else if (server.gameData.gameState == 'PLAY_0') {
 		server.gameData.gameState = 'PLAY_1';
 	} else if (server.gameData.gameState == 'PLAY_1') {
 		server.gameData.gameState = 'PLAY_2';
 	} else if (server.gameData.gameState == 'PLAY_2') {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
-		server.gameData.gameState = 'PLAY_4';
-	} else if (server.gameData.gameState == 'PLAY_4') {
 		if (server.gameData.hands.every(e => !e.flat().length)) {
 			server.gameData.gameState = 'SCORE';
 		} else {
-			server.gameData.gameState = 'PLAY_1';
+			server.gameData.gameState = 'PLAY_0';
 		}
-	} else if (server.gameData.gameState == 'LEADERBOARD') {
-		server.gameData.gameState = 'DEAL_3';
+	} else if (server.gameData.gameState == 'SCORE') {
+		if (server.gameData.scores.every(e => e > server.gameData.losingThreshold)) {
+			server.gameData.gameState = 'DEAL_3';
+		} else {
+			server.gameData.gameState = 'LEADERBOARD';
+		}
+	}  else if (server.gameData.gameState == 'LEADERBOARD') {
+		server.gameData.gameState = 'SHOW_3';
 	}
-	// gameOFL(server);
+
+	gameOFL(server);
 }
 
 function gameOFL(server) { // TODO OFL (may not even need this?)
 	let state = server.gameData.gameState;
-	if (state == 'DEAL_3') {
-
-	} else if (state == 'SHOW_3') {
-
-	} else if (state == 'DEAL_ALL') {
-
+	if (state == 'SHOW_3') {
+		for (let i = 0; i < server.gameData.turnOrder.length; i++) {
+			for (let j = 0; j < 3; j++) server.gameData.hands[i][0].push(server.gameData.decks[0].pop());
+			server.gameData.needToAct[i] = 1;
+		}
 	} else if (state == 'SHOW_ALL') {
+
+	} else if (state == 'PLAY_0') {
 
 	} else if (state == 'PLAY_1') {
 
@@ -184,26 +193,33 @@ function gameOFL(server) { // TODO OFL (may not even need this?)
 
 	} else if (state == 'PLAY_3') {
 
-	} else if (state == 'PLAY_4') {
-
 	} else if (state == 'SCORE') {
 
 	} else if (state == 'LEADERBOARD') {
 
 	}
+
+	Utils.broadcastGameStateToConnected(users, server);
 }
 
 export function processCommand(data, ws, server) {
 	let command = CommandParse.parseCommand(data);
+	let commandUpper = command.command[0].toUpperCase();
 	console.log(command);
 	let ret = [];
 	let status = 1;
 
+	let myIdx = server.gameData.turnOrder.indexOf(ws.username);
 	switch (command.command[0].toLowerCase()) {
 		case 'help':
+			if (command.command.length > 1) {
+				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				status = 0;
+				break;
+			}
 			let str = '';
 			str += 'HELP - display help menu\n';
-			if (ws.username == server.host) str += 'EXIT - exit back to lobby\n';
+			str += 'EXIT - exit back to lobby\n';
 			if (ws.username == server.host) str += 'DEAL - start round\n';
 			str += 'SORT - sorts hand in the specified order\n';
 				str += '\t- unspecified cards retain their order\n';
@@ -217,45 +233,156 @@ export function processCommand(data, ws, server) {
 				str += '\tPLAY [cards]\n';
 				str += '\t\te.g. PLAY "4 1"\n';
 			str += 'PASS - pass a play (in the "SHOW" phase)\n';
+			str += 'CLEAR - clears the console\n';
+				str += '\talias CLR\n';
 			str += 'DEBUG - show debug elements\n';
-			ret.push(str.slice(0, -1));
+			ret.push([str.slice(0, -1), 0]);
 			break;
 		case 'exit':	// TODO
-			break;
-		case 'deal':	// TODO
-			if (ws.username == server.host) {
-				gameClientNSL(server);
-				let serverInfo = structuredClone(server);
-				let gameData = structuredClone(server.gameData); // TODO - obfuscate
-				delete serverInfo.gameData;
-				broadcastToConnected(server, {
-					tag: 'updateGUI',
-					data: {gameData: gameData, serverData: serverInfo}
-				});
-				break;
+			if (command.command.length > 1) {
+				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				status = 0;
+			} else {
+				Utils.broadcastToConnected(users, server,
+					{tag: 'broadcastedMessage', data: '[' + ws.username + '] exited to lobby'}
+				);
+				Utils.broadcastToConnected(users, server,
+					{tag: 'joinedLobby', status: 1, data: server}
+				);
 			}
-		case 'sort':	// TODO
+			break;
+		case 'deal':
+			if (ws.username == server.host) {
+				if (command.command.length > 1) {
+					ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+					status = 0;
+					break;
+				}
+				if (server.gameData.gameState == 'LEADERBOARD' || server.gameData.gameState == 'SCORE') {
+					gameNSL(server);
+					ret.push(['Started round ' + server.gameData.round, 1]);
+				} else {
+					ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+					status = 0;
+				}
+			} else {
+				ret.push(['Unknown command [' + command.command[0] + ']', 0]);
+				status = 0;
+			}
+			break;
+		case 'sort':
+			if (server.gameData.gameState == 'LEADERBOARD' || server.gameData.gameState == 'SCORE') {
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+				status = 0;
+			} else if (command.command.length < 2) {
+				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
+				status = 0;
+			} else if (command.command.length > 2) {
+				ret.push(['Too many arguments for [' + commandUpper + '] (need 1)', 0]);
+				status = 0;
+			} else {
+				let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
+				let invalidArg = arg1.find(e => isNaN(e) || e < 0 || e >= server.gameData.hands[myIdx].length);
+				if (invalidArg != undefined) {
+					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + invalidArg + '")', 0]);
+					status = 0;
+					break;
+				} else if ((new Set(arg1)).size != arg1.length) {
+					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (duplicate subarguments)', 0]);
+					status = 0;
+					break;
+				}
+
+				server.gameData.hands[myIdx][0] = Utils.sortArray(server.gameData.hands[myIdx][0], arg1);
+				Utils.broadcastGameState(ws, server);
+			}
 			break;
 		case 'swap':	// TODO
 			break;
 		case 'play':	// TODO
+			if (
+				server.gameData.gameState != 'SHOW_3' &&
+				server.gameData.gameState != 'SHOW_ALL' &&
+				server.gameData.gameState != ('PLAY_' + myIdx)
+			) {
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+				status = 0;
+			} else if (command.command.length < 2) {
+				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
+				status = 0;
+			} else if (command.command.length > 2) {
+				ret.push(['Too many arguments for [' + commandUpper + '] (need 1)', 0]);
+				status = 0;
+			} else {
+				let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
+				let invalidArg = arg1.find(e => isNaN(e) || e < 0 || e >= server.gameData.hands[myIdx].length);
+				if (invalidArg != undefined) {
+					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + invalidArg + '")', 0]);
+					status = 0;
+					break;
+				}
+
+				if (server.gameData.gameState == 'SHOW_3' || server.gameData.gameState == 'SHOW_ALL') {
+					let invalidArg = arg1.find(e => [11, 13, 36, 48].indexOf(server.gameData.hands[myIdx][0][e]) == -1 || server.gameData.stacks[1].findIndex(e1 => e1 == server.gameData.hands[myIdx][0][e]) != -1);
+					if (invalidArg != undefined) {
+						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + invalidArg + '")', 0]);
+						status = 0;
+						break;
+					}
+
+					let cards = arg1.map(e => server.gameData.hands[myIdx][0][e]);
+					let val = server.gameData.gameState == 'SHOW_3' ? 4 : 2;
+					for (let e of cards) {
+						if (server.gameData.stacks[1].indexOf(e) == -1) {
+							server.gameData.stacks[1].push([e, val]);
+							server.gameData.hands[myIdx][1].push(e);
+							ret.push(['Shown card [' + GameUtils.card2Str(e) + '] for x' + val + ' value', 0]);
+						}
+					}
+
+					server.gameData.needToAct[myIdx] = 0;
+
+					if (server.gameData.needToAct.every(e => e == 0)) {
+						gameNSL(server);
+						break;
+					}
+				}
+
+				Utils.broadcastGameStateToConnected(users, server);
+			}
 			break;
-		case 'pass':	// TODO
+		case 'pass':
+			if (command.command.length > 1) {
+				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				status = 0;
+			}	else if (
+				server.gameData.gameState != 'SHOW_3' &&
+				server.gameData.gameState != 'SHOW_ALL' &&
+				server.gameData.gameState != ('PLAY_' + myIdx)
+			) {
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+				status = 0;
+			} else {
+				server.gameData.needToAct[myIdx] = 0;
+				Utils.broadcastGameStateToConnected(users, server);
+			}
+			break;
+		case 'clear':
+		case 'clr':
+			if (command.command.length > 1) {
+				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				status = 0;
+			} else {
+				ws.send(JSON.stringify({tag: 'clearConsole'}));
+			}
 			break;
 		case 'debug':
 			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret}));
 			break;
 		default:
-			ret.push('Unknown command [' + command.command + ']');
+			ret.push(['Unknown command [' + commandUpper + ']', 0]);
 			status = 0;
 	}
 
-	ws.send(JSON.stringify({tag: 'receiveCommand', status: status, data: ret}));
-}
-
-export function broadcastToConnected(server, data) {
-	for (let username of server.connected) {
-		let ws = users[username];
-		ws.send(JSON.stringify(data));
-	}
+	return {tag: 'receiveCommand', status: status, data: ret};
 }

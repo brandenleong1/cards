@@ -11,9 +11,6 @@
 	grid-template-columns: repeat(6, max-content);
 	grid-template-rows: repeat(4, auto);
 	row-gap: 5px;
-	/* background-color: blue; */
-	/* min-height: 500px; */
-	/* width: 200px; */
 }
 
 #game-gui-hands > div {
@@ -39,6 +36,32 @@
 	justify-self: center;
 }
 
+#game-gui-shown-cards {
+	display: flex;
+	align-items: center;
+	column-gap: 5px;
+}
+
+#game-gui-shown-cards::before {
+	content: 'Shown:';
+	font-size: 0.8em;
+	padding-right: 10px;
+}
+
+#game-gui-shown-cards > div {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+#game-gui-shown-cards > div :nth-child(1) {
+	font-size: 3em;
+}
+
+#game-gui-shown-cards > div :nth-child(2) {
+	font-size: 0.6em;
+}
+
 #game-gui-hands-self-wrapper {
 	position: sticky;
 	top: 100%;
@@ -55,7 +78,28 @@
 	height: max-content;
 	translate: 0 -100%;
 	text-align: center;
+	column-gap: 5px;
 }
+
+#game-gui-hands-self > div :nth-child(1) {
+	font-size: 0.8em;
+	opacity: 0.8;
+}
+
+#game-gui-hands-self > div :nth-child(2) {
+	font-size: 4em;
+	line-height: 1em;
+	background-color: white;
+	border-radius: 4px;
+}
+
+#game-gui-hands-self > .unplayable {
+	opacity: 0.5;
+}
+
+/* #game-gui-hands-self > :not(.unplayable) {
+	translate: 0 -20px;
+} */
 
 #game-gui-limit-count {
 	color: var(--color_red);
@@ -76,7 +120,6 @@
 	grid-template-columns: subgrid;
 	position: relative;
 	line-height: 1.2em;
-	/* font-size: 1.2em; */
 }
 
 #game-gui-leaderboard > div::before {
