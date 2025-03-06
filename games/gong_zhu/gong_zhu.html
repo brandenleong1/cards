@@ -205,10 +205,36 @@
 			<div class="content-text" id="lobby-host"></div>
 			<div class="content-text" id="lobby-users"></div>
 			<div class="content-container-vertical" id="lobby-user-list"></div>
+
+			<div class="content-break-vertical"></div>
+
+			<div class="content-container-vertical" id="lobby-settings">
+				<div class="content-header-2">Settings</div>
+				<div class="content-table">
+					<table class="no-border">
+						<tr>
+							<td hover-text="If a player has a score less than or equal to the losing threshold, the game ends">Losing Threshold</td>
+							<td><input type="number" id="lobby-settings-losing-threshold" max="0" value="-1000" /></td>
+						</tr>
+						<tr>
+							<td hover-text="Enable the ×4 exposure round">Expose 3</td>
+							<td><input type="checkbox" id="lobby-settings-expose-3" /></td>
+						</tr>
+						<tr>
+							<td hover-text="Pig (Q♠) only turns positive when you take the sheep (J♦) and all the hearts">Zhu Yang Man Juan</td>
+							<td><input type="checkbox" id="lobby-settings-zhu-yang-man-juan" /></td>
+						</tr>
+					</table>
+				</div>
+			</div>
 		</div>
 
 		<div class="content-container-horizontal" id="game" style="display: none; height: calc(100vh - 40px);">
 		<!-- <div class="content-container-horizontal" id="game" style="height: calc(100vh - 40px);"> -->
+			<div id="game-notes">
+				<div id="game-notes-btn"><span>&#x27E8</span></div>
+			</div>
+
 			<div class="content-container-vertical" style="flex: 100 1 0; height: 100%; width: 0; row-gap: 10px;">
 				<div class="content-container-vertical" id="game-gui">
 					<div class="game-gui-frame" id="game-gui-frame-game" style="display: none;">
@@ -216,7 +242,7 @@
 							<div id="game-gui-hands-self"></div>
 						</div>
 
-						<div style="font-weight: bold;">Turn: <span id="game-gui-turn-count">1</span></div>
+						<div style="font-weight: bold;">Trick: <span id="game-gui-trick-count">1</span></div>
 						<div class="content-break-vertical"></div>
 						<div id="game-gui-hands"></div>
 						<div class="content-break-vertical"></div>
@@ -244,7 +270,7 @@
 				<div id="game-console" style="flex: calc(100 * 0.2 / (1 - 0.2)) 1 0;">
 					<div class="content-header-2"><b>Console</b></div>
 					<div class="content-container-vertical" id="game-console-output"></div>
-					<label style="display: flex; align-items: center; border-top: 1px solid black; cursor: text; font-family: monospace;"> >>
+					<label style="display: flex; align-items: center; border-top: 1px solid var(--color_txt); cursor: text; font-family: monospace;"> >>
 						<input type="text" id="game-console-input" style="font-family: monospace;" placeholder="Enter command" />
 					</label>
 				</div>
@@ -252,7 +278,7 @@
 			<div id="game-chat" style="width: 0; flex: calc(100 * 0.3 / (1 - 0.3)) 1 0;">
 				<div class="content-header-2"><b>Chat</b></div>
 				<div class="content-container-vertical" id="game-chat-output"></div>
-				<label style="display: flex; align-items: center; border-top: 1px solid black; cursor: text;">
+				<label style="display: flex; align-items: center; border-top: 1px solid var(--color_txt); cursor: text;">
 					<input type="text" id="game-chat-input" placeholder="Type to chat..." />
 				</label>
 			</div>
@@ -296,7 +322,7 @@
 				<table class="no-border">
 					<tr>
 						<td>Lobby Name</td>
-						<td><input type="text" id="create-lobby-name" placeholder="Lobby Name"></td>
+						<td><input type="text" id="create-lobby-name" placeholder="Lobby Name" /></td>
 					</tr>
 				</table>
 			</div>

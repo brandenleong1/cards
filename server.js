@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const http = require('http');
 const ws = require('ws');
+const { updateServerSettings } = require('./games/gong_zhu/server');
 
 const game = {
 	gong_zhu: require(path.resolve(__dirname, './games/gong_zhu/server.js'))
@@ -41,12 +42,7 @@ let messageDecoder = {
 		} else {
 			let res = game.gong_zhu.joinServer(ws, data.data);
 			if (res[0]) {
-				for (let username of res[1].connected) {
-					game.gong_zhu.users[username].send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
-				}
-				// console.log('joinServer', res[1].connected);
-				// ws.connected = data.data;
-				// console.log('joinServer', ws.connected, data.data.connected);
+				Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'joinedLobby', status: res[0], data: res[1]});
 			} else {
 				ws.send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
 			}
@@ -57,19 +53,26 @@ let messageDecoder = {
 			let res = game.gong_zhu.leaveServer(ws, ws.connected);
 			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
 			if (res[0]) {
-				for (let username of ws.connected.connected) {
-					let ws1 = game.gong_zhu.users[username];
-					ws1.send(JSON.stringify({tag: 'joinedLobby', status: res[0], data: res[1]}));
-				}
+				Utils.broadcastToConnected(game.gong_zhu.users, ws.connected, {tag: 'joinedLobby', status: res[0], data: res[1]});
 				delete ws.connected;
+			}
+		}
+	},
+	'updateLobbySettings': (ws, data) => {
+		if (!ws.connected) return;
+
+		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		let server = game.gong_zhu.servers[idx];
+		if (ws.username == server.host) {
+			let res = game.gong_zhu.updateServerSettings(server, data.data.settings);
+			if (res[0]) {
+				Utils.broadcastToConnected(game.gong_zhu.users, ws.connected, {tag: 'joinedLobby', status: res[0], data: res[1]});
 			}
 		}
 	},
 	'startGame': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
 		let server = game.gong_zhu.servers[idx];
-		// server.gameData = structuredClone(game.gong_zhu.defaultSettings);
-		// console.log(server);
 		if (server.connected.length < server.gameData.minPlayers) {
 			ws.send(JSON.stringify({
 				tag: 'broadcastedMessage',
@@ -97,6 +100,7 @@ let messageDecoder = {
 
 		ws.send(JSON.stringify(res));
 		Utils.broadcastToConnected(game.gong_zhu.users, server, resToAll, ws.username);
+		// console.log(JSON.stringify(game.gong_zhu.servers[idx]));
 	},
 	'sendChat': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);

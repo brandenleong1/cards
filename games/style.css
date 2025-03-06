@@ -76,6 +76,20 @@
 	padding: 0 20px;
 }
 
+#lobby-settings table {
+	table-layout: auto;
+	width: fit-content;
+}
+
+#lobby-settings td:nth-child(1) {
+	cursor: help;
+	text-decoration: underline dotted;
+}
+
+#game {
+	position: relative;
+}
+
 #game input[type=text] {
 	background-color: rgba(0, 0, 0, 0);
 }
@@ -171,6 +185,49 @@
 
 #game-console input[type=text], #game-chat input[type=text] {
 	box-shadow: none !important;
+}
+
+#game-notes {
+	position: fixed;
+	height: 100vh;
+	width: 300px;
+	top: 0;
+	right: 0;
+	z-index: 10;
+	translate: 100% 0;
+	background-color: blue;
+	transform-style: preserve-3d;
+	transition: translate 1s;
+}
+
+#game-notes.selected {
+	translate: 0;
+}
+
+#game-notes-btn {
+	cursor: pointer;
+	position: absolute;
+	top: 50%;
+	left: 0;
+	translate: -100% -50%;
+	width: 40px;
+	height: 80px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--color_bg2);
+	border-radius: 5px 0 0 5px;
+	font-size: 2em;
+	box-shadow: 0 0 5px 2px black;
+	transform: translateZ(-1px);
+}
+
+#game-notes-btn span {
+	transition: rotate 1s;
+}
+
+#game-notes.selected #game-notes-btn span {
+	rotate: y 0.5turn;
 }
 
 .debug:not(.shown) {

@@ -1,4 +1,4 @@
-const card2Rank = 'A23456789JQK'.split('');
+const card2Rank = 'A 2 3 4 5 6 7 8 9 10 J Q K'.split(' ');
 const card2Suit = '♠♥♦♣'.split('');
 
 export function initDeck() {
@@ -24,5 +24,17 @@ export function card2Unicode(card) {
     let rank = card % 13;
     let suit = Math.floor(card / 13);
 
+	if (rank >= 11) rank++;
+
     return String.fromCodePoint(blockStart + rank + (suit * 16));
+}
+
+export function filterByRank(card, arr) {
+	if (card >= 52) return arr.filter(e => e >= 52);
+	return arr.filter(e => e < 52 && (e % 13 == card % 13));
+}
+
+export function filterBySuit(card, arr) {
+	if (card >= 52) return arr.filter(e => e >= 52);
+	return arr.filter(e => e < 52 && (Math.floor(e / 13) == Math.floor(card / 13)));
 }

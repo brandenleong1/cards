@@ -45,6 +45,14 @@ async function init() {
 		}
 	});
 
+	document.querySelector('#game-notes-btn').addEventListener('click', function() {
+		document.querySelector('#game-notes').classList.toggle('selected');
+	});
+
+	for (let e of document.querySelectorAll('#lobby-settings td:nth-child(1)')) {
+		Popup.createHoverPopup(e.getAttribute('hover-text'), e);
+	}
+
 	initWebSocket();
 }
 

@@ -12,14 +12,19 @@ export const defaultSettings = {
 	numDecks: 1,
 	minPlayers: 4,
 	maxPlayers: 4,
-	losingThreshold: -1000,
 	decks: [],
 	turnOrder: [],
+	turnFirstIdx: 0,
 	needToAct: [],
-	hands: [],					// [hidden, shown, played] * numPlayers
-	stacks: [[], []],			// discard, [shown, val]
+	hands: [],					// [[hidden + shown, shown, collected, played], * numPlayers]
+	stacks: [[], []],			// [discard, [shown, val]]
 	scores: [],
 	round: 0,
+	settings: {
+		losingThreshold: -1000,
+		expose3: false,
+		zhuYangManJuan: false
+	}
 };
 
 
@@ -59,8 +64,6 @@ export function addServer(data) {
 		else return a.creator.localeCompare(b.creator);
 	});
 
-	// console.log(servers);
-
 	return [idx == -1 ? 0 : 1, data];
 }
 
@@ -73,7 +76,6 @@ export function getServerIdx(serverData) {
 }
 
 export function joinServer(ws, serverData) {
-	// console.log(serverData);
 	let idx = getServerIdx(serverData);
 
 	if (idx == -1) return [0, 'Server does not exist'];
@@ -81,8 +83,6 @@ export function joinServer(ws, serverData) {
 		Utils.binaryInsert(servers[idx].connected, ws.username, function(a, b) {
 			return a.localeCompare(b);
 		});
-		// console.log(servers[idx].connected);
-		// console.log('joinServer', ws, serverData);
 		ws.connected = servers[idx];
 		return [1, servers[idx]];
 	}
@@ -104,6 +104,17 @@ export function leaveServer(ws, serverData) {
 		if (servers[idx].host == ws.username) {
 			let hostIdx = Math.floor(Math.random() * servers[idx].connected.length);
 			servers[idx].host = servers[idx].connected[hostIdx];
+		}
+		return [1, servers[idx]];
+	}
+}
+
+export function updateServerSettings(serverData, settings) {
+	let idx = getServerIdx(serverData);
+	if (idx == -1) return [0, 'Server does not exist'];
+	else {
+		for (let property in settings) {
+			servers[idx].gameData.settings[property] = settings[property];
 		}
 		return [1, servers[idx]];
 	}
@@ -135,7 +146,7 @@ export function initGame(server) {
 
 	for (let i = 0; i < server.connected.length; i++) {
 		gameData.hands.push(new Array());
-		for (let j = 0; j < 3; j++) gameData.hands[i].push(new Array());
+		for (let j = 0; j < 4; j++) gameData.hands[i].push(new Array());
 		gameData.scores.push(0);
 		gameData.needToAct.push(0);
 	}
@@ -143,6 +154,8 @@ export function initGame(server) {
 
 	gameData.gameState = 'LEADERBOARD';
 	gameData.round = 1;
+	gameData.turnFirstIdx = 0;
+
 	gameOFL(server);
 }
 
@@ -158,35 +171,81 @@ function gameNSL(server) {
 	} else if (server.gameData.gameState == 'PLAY_2') {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
-		if (server.gameData.hands.every(e => !e.flat().length)) {
+		if (server.gameData.hands.every(e => !e[0].length)) {
 			server.gameData.gameState = 'SCORE';
 		} else {
 			server.gameData.gameState = 'PLAY_0';
 		}
 	} else if (server.gameData.gameState == 'SCORE') {
-		if (server.gameData.scores.every(e => e > server.gameData.losingThreshold)) {
+		if (server.gameData.scores.every(e => e > server.gameData.settings.losingThreshold)) {
 			server.gameData.gameState = 'DEAL_3';
 		} else {
 			server.gameData.gameState = 'LEADERBOARD';
 		}
 	}  else if (server.gameData.gameState == 'LEADERBOARD') {
-		server.gameData.gameState = 'SHOW_3';
+		if (server.gameData.settings.expose3) {
+			server.gameData.gameState = 'SHOW_3';
+		} else {
+			server.gameData.gameState = 'SHOW_ALL';
+		}
 	}
 
 	gameOFL(server);
 }
 
-function gameOFL(server) { // TODO OFL (may not even need this?)
-	let state = server.gameData.gameState;
+function gameOFL(server) {
+	let gameData = server.gameData;
+	let state = gameData.gameState;
 	if (state == 'SHOW_3') {
-		for (let i = 0; i < server.gameData.turnOrder.length; i++) {
-			for (let j = 0; j < 3; j++) server.gameData.hands[i][0].push(server.gameData.decks[0].pop());
-			server.gameData.needToAct[i] = 1;
+		for (let i = 0; i < gameData.turnOrder.length; i++) {
+			for (let j = 0; j < 3; j++) gameData.hands[i][0].push(gameData.decks[0].pop());
+			gameData.needToAct[i] = 1;
 		}
 	} else if (state == 'SHOW_ALL') {
+		while (gameData.decks[0].length) {
+			for (let i = 0; i < gameData.turnOrder.length; i++) {
+				gameData.hands[i][0].push(gameData.decks[0].pop());
+			}
+		}
 
+		for (let i = 0; i < gameData.turnOrder.length; i++) {
+			gameData.needToAct[i] = 1;
+		}
 	} else if (state == 'PLAY_0') {
+		if (!gameData.stacks[0].length && gameData.hands.every(e => !e[3].length)) {
+			gameData.turnFirstIdx = gameData.hands.findIndex(e => e[0].includes(1));
+		} else {
+			let winnerIdx = gameData.turnFirstIdx;
+			let winnerRank = gameData.hands[gameData.turnFirstIdx][3][0] % 13;
+			let trickSuit = Math.floor(gameData.hands[gameData.turnFirstIdx][3][0] / 13);
+			for (let i = 0; i < gameData.turnOrder.length; i++) {
+				let mySuit = Math.floor(gameData.hands[i][3][0] / 13);
+				let myRank = gameData.hands[i][3][0] % 13;
 
+				if (mySuit == trickSuit) {
+					if (myRank == 0 || (winnerRank != 0 && myRank > winnerRank)) {
+						winnerIdx = i;
+						winnerRank = myRank;
+					}
+				}
+			}
+
+			gameData.turnFirstIdx = winnerIdx;
+
+			let played = new Set(gameData.hands.map(e => e[3]).flat());
+			let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
+			important.forEach(e => gameData.hands[winnerIdx][2].push(e));
+
+			gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
+
+			gameData.hands.forEach((e, i) => {
+				for (let j = e[1].length - 1; j >= 0; j--) {
+					if (Math.floor(e[1][j] / 13) == trickSuit) {
+						e[1].splice(j, 1);
+					}
+				}
+			});
+		}
 	} else if (state == 'PLAY_1') {
 
 	} else if (state == 'PLAY_2') {
@@ -203,13 +262,16 @@ function gameOFL(server) { // TODO OFL (may not even need this?)
 }
 
 export function processCommand(data, ws, server) {
+	let gameData = server.gameData;
+
 	let command = CommandParse.parseCommand(data);
 	let commandUpper = command.command[0].toUpperCase();
 	console.log(command);
 	let ret = [];
 	let status = 1;
 
-	let myIdx = server.gameData.turnOrder.indexOf(ws.username);
+	let myIdx = gameData.turnOrder.indexOf(ws.username);
+	let relativeIdx = ((myIdx - gameData.turnFirstIdx) % (gameData.turnOrder.length)) + (((myIdx - gameData.turnFirstIdx) % (gameData.turnOrder.length)) < 0 ? gameData.turnOrder.length : 0);
 	switch (command.command[0].toLowerCase()) {
 		case 'help':
 			if (command.command.length > 1) {
@@ -238,7 +300,7 @@ export function processCommand(data, ws, server) {
 			str += 'DEBUG - show debug elements\n';
 			ret.push([str.slice(0, -1), 0]);
 			break;
-		case 'exit':	// TODO
+		case 'exit':
 			if (command.command.length > 1) {
 				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
 				status = 0;
@@ -258,11 +320,11 @@ export function processCommand(data, ws, server) {
 					status = 0;
 					break;
 				}
-				if (server.gameData.gameState == 'LEADERBOARD' || server.gameData.gameState == 'SCORE') {
+				if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 					gameNSL(server);
-					ret.push(['Started round ' + server.gameData.round, 1]);
+					ret.push(['Started round ' + gameData.round, 1]);
 				} else {
-					ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+					ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 					status = 0;
 				}
 			} else {
@@ -271,8 +333,8 @@ export function processCommand(data, ws, server) {
 			}
 			break;
 		case 'sort':
-			if (server.gameData.gameState == 'LEADERBOARD' || server.gameData.gameState == 'SCORE') {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 				status = 0;
 			} else if (command.command.length < 2) {
 				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
@@ -282,9 +344,9 @@ export function processCommand(data, ws, server) {
 				status = 0;
 			} else {
 				let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-				let invalidArg = arg1.find(e => isNaN(e) || e < 0 || e >= server.gameData.hands[myIdx].length);
-				if (invalidArg != undefined) {
-					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + invalidArg + '")', 0]);
+				let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+				if (invalidArgIdx != -1) {
+					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
 					status = 0;
 					break;
 				} else if ((new Set(arg1)).size != arg1.length) {
@@ -293,19 +355,19 @@ export function processCommand(data, ws, server) {
 					break;
 				}
 
-				server.gameData.hands[myIdx][0] = Utils.sortArray(server.gameData.hands[myIdx][0], arg1);
+				gameData.hands[myIdx][0] = Utils.sortArray(gameData.hands[myIdx][0], arg1);
 				Utils.broadcastGameState(ws, server);
 			}
 			break;
 		case 'swap':	// TODO
 			break;
-		case 'play':	// TODO
+		case 'play':
 			if (
-				server.gameData.gameState != 'SHOW_3' &&
-				server.gameData.gameState != 'SHOW_ALL' &&
-				server.gameData.gameState != ('PLAY_' + myIdx)
+				gameData.gameState != 'SHOW_3' &&
+				gameData.gameState != 'SHOW_ALL' &&
+				gameData.gameState != ('PLAY_' + relativeIdx)
 			) {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 				status = 0;
 			} else if (command.command.length < 2) {
 				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
@@ -315,37 +377,63 @@ export function processCommand(data, ws, server) {
 				status = 0;
 			} else {
 				let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-				let invalidArg = arg1.find(e => isNaN(e) || e < 0 || e >= server.gameData.hands[myIdx].length);
-				if (invalidArg != undefined) {
-					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + invalidArg + '")', 0]);
+				let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+				if (invalidArgIdx != -1) {
+					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
 					status = 0;
 					break;
 				}
 
-				if (server.gameData.gameState == 'SHOW_3' || server.gameData.gameState == 'SHOW_ALL') {
-					let invalidArg = arg1.find(e => [11, 13, 36, 48].indexOf(server.gameData.hands[myIdx][0][e]) == -1 || server.gameData.stacks[1].findIndex(e1 => e1 == server.gameData.hands[myIdx][0][e]) != -1);
-					if (invalidArg != undefined) {
-						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + invalidArg + '")', 0]);
+				if (gameData.gameState == 'SHOW_3' || gameData.gameState == 'SHOW_ALL') {
+					let invalidArgIdx = arg1.findIndex(e => [11, 13, 36, 48].indexOf(gameData.hands[myIdx][0][e]) == -1 || gameData.stacks[1].findIndex(e1 => e1 == gameData.hands[myIdx][0][e]) != -1);
+					if (invalidArgIdx != -1) {
+						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
 						status = 0;
 						break;
 					}
 
-					let cards = arg1.map(e => server.gameData.hands[myIdx][0][e]);
-					let val = server.gameData.gameState == 'SHOW_3' ? 4 : 2;
+					let cards = arg1.map(e => gameData.hands[myIdx][0][e]);
+					let val = gameData.gameState == 'SHOW_3' ? 4 : 2;
 					for (let e of cards) {
-						if (server.gameData.stacks[1].indexOf(e) == -1) {
-							server.gameData.stacks[1].push([e, val]);
-							server.gameData.hands[myIdx][1].push(e);
+						if (gameData.stacks[1].indexOf(e) == -1) {
+							gameData.stacks[1].push([e, val]);
+							gameData.hands[myIdx][1].push(e);
 							ret.push(['Shown card [' + GameUtils.card2Str(e) + '] for x' + val + ' value', 0]);
 						}
 					}
-
-					server.gameData.needToAct[myIdx] = 0;
-
-					if (server.gameData.needToAct.every(e => e == 0)) {
-						gameNSL(server);
+				} else {
+					if (arg1.length != 1) {
+						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (incompatible number of subarguments; need 1, got ' + arg1.length + ')', 0]);
+						status = 0;
 						break;
 					}
+
+					let playableCards = new Set();
+					if (relativeIdx == 0) {
+						gameData.hands[myIdx][0].filter(e => !gameData.hands[myIdx][1].includes(e)).forEach(e => playableCards.add(e));
+						gameData.hands[myIdx][1].filter(e => GameUtils.filterBySuit(e, gameData.hands[myIdx][0]).length == 1).forEach(e => playableCards.add(e));
+					} else {
+						let filtered = GameUtils.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+						if (filtered.length) {
+							filtered.forEach(e => {
+								if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+							});
+						} else {
+							gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+						}
+					}
+
+					let invalidArgIdx = arg1.findIndex(e => !playableCards.has(gameData.hands[myIdx][0][e]));
+					if (invalidArgIdx != -1) {
+						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
+						status = 0;
+						break;
+					}
+
+					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][arg1[0]]);
+					if (shownIdx != -1) gameData.hands[myIdx][1].splice(shownIdx, 1);
+					gameData.hands[myIdx][3].push(...gameData.hands[myIdx][0].splice(arg1[0], 1));
+					gameNSL(server);
 				}
 
 				Utils.broadcastGameStateToConnected(users, server);
@@ -355,15 +443,18 @@ export function processCommand(data, ws, server) {
 			if (command.command.length > 1) {
 				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
 				status = 0;
-			}	else if (
-				server.gameData.gameState != 'SHOW_3' &&
-				server.gameData.gameState != 'SHOW_ALL' &&
-				server.gameData.gameState != ('PLAY_' + myIdx)
+			} else if (
+				gameData.gameState != 'SHOW_3' &&
+				gameData.gameState != 'SHOW_ALL'
 			) {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + server.gameData.gameState + ']', 0]);
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 				status = 0;
 			} else {
-				server.gameData.needToAct[myIdx] = 0;
+				gameData.needToAct[myIdx] = 0;
+				if (gameData.needToAct.every(e => e == 0)) {
+					gameNSL(server);
+					break;
+				}
 				Utils.broadcastGameStateToConnected(users, server);
 			}
 			break;

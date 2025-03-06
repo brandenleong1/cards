@@ -41,14 +41,32 @@ function initWebSocket() {
 		if (func) func(data);
 	});
 
+	ws.addEventListener('close', function(e) {
+		Popup.toastPopup('WebSocket closed');
+
+		[
+			(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
+			document.querySelector('#lobby-menu'),
+			document.querySelector('#lobby'),
+			document.querySelector('#game')
+		].filter(e => e).forEach(e => e.remove());
+
+		let div = document.createElement('div');
+		div.classList.add('content-text');
+		div.innerText = 'WebSocket connection closed, try again another time.';
+		document.body.append(div);
+	});
+
 	ws.addEventListener('error', function(e) {
 		console.log('WebSocket error:', e);
 		Popup.toastPopup('WebSocket error');
 
 		[
-			document.querySelector('#submit-username-btn').parentElement,
-			document.querySelector('#lobby-menu')
-		].forEach(e => e.remove());
+			(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
+			document.querySelector('#lobby-menu'),
+			document.querySelector('#lobby'),
+			document.querySelector('#game')
+		].filter(e => e).forEach(e => e.remove());
 
 		let div = document.createElement('div');
 		div.classList.add('content-text');
@@ -67,7 +85,7 @@ function submitUsername() {
 		btn.style.filter = 'brightness(0.5)';
 		btn.style.cursor = 'not-allowed';
 
-		if (ws) ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
+		ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
 	}
 }
 
@@ -191,7 +209,6 @@ function updateLobbies(data) {
 
 			popup.querySelector('.button-positive-2').onclick = function() {
 				this.onclick = null;
-				console.log(this);
 				this.parentNode.parentNode.click();
 				ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
 			};
@@ -254,6 +271,27 @@ function showLobby(data) {
 		div.classList.add('content-text');
 		div.innerText = (user == server.host ? '⭐ ' : '') + user + (user == username ? ' ⇐ You' : '');
 		list.append(div);
+	}
+
+	document.querySelector('#lobby-settings-losing-threshold').value = server.gameData.settings.losingThreshold;
+	document.querySelector('#lobby-settings-expose-3').checked = server.gameData.settings.expose3;
+	document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gameData.settings.zhuYangManJuan;
+
+	for (let e of document.querySelectorAll('#lobby-settings input')) {
+		if (username == server.host) {
+			e.onchange = function() {
+				ws.send(JSON.stringify({tag: 'updateLobbySettings', data: {settings: {
+					losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
+					expose3: document.querySelector('#lobby-settings-expose-3').checked,
+					zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
+				}}}));
+			};
+			console.log(e.onchange);
+			e.disabled = false;
+		} else {
+			e.onchange = null;
+			e.disabled = true;
+		}
 	}
 
 	if (handlers['lobbyRefresh']) clearInterval(handlers['lobbyRefresh']);
@@ -402,7 +440,8 @@ async function drawGUI(data) { // TODO
 
 	// Initialize values
 	document.querySelector('#game-gui-round-count').innerText = gameData.round;
-	document.querySelector('#game-gui-limit-count').innerText = gameData.losingThreshold;
+	document.querySelector('#game-gui-limit-count').innerText = gameData.settings.losingThreshold;
+	document.querySelector('#game-gui-trick-count').innerText = Math.round(gameData.stacks[0].length / gameData.turnOrder.length) + 1;
 	document.querySelector('#game-gui-game-state').innerText = gameData.gameState;
 
 	let absMaxScore = Math.abs(gameData.scores[0]);
@@ -438,19 +477,53 @@ async function drawGUI(data) { // TODO
 		leaderboard.append(div1);
 	}
 
-	let playableCards = {};
+	let playableCards = new Set();
 	switch (gameData.gameState) {
 		case 'SHOW_3':
 		case 'SHOW_ALL':
-			[11, 13, 36, 48].filter(e => gameData.stacks[1].findIndex(e1 => e1[0] == e) == -1).forEach(e => playableCards[e] = 1);
+			[11, 13, 36, 48].filter(e => gameData.stacks[1].findIndex(e1 => e1[0] == e) == -1).forEach(e => playableCards.add(e));
 			break;
-		case 'PLAY_0':	// TODO
+		case 'PLAY_0':
+			if (username == gameData.turnOrder[gameData.turnFirstIdx]) {
+				gameData.hands[myIdx][0].filter(e => !gameData.hands[myIdx][1].includes(e)).forEach(e => playableCards.add(e));
+				gameData.hands[myIdx][1].filter(e => Cards.filterBySuit(e, gameData.hands[myIdx][0]).length == 1).forEach(e => playableCards.add(e));
+			}
 			break;
-		case 'PLAY_1':	// TODO
+		case 'PLAY_1':
+			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length]) {
+				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+				if (filtered.length) {
+					filtered.forEach(e => {
+						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+					});
+				} else {
+					gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+				}
+			}
 			break;
-		case 'PLAY_2':	// TODO
+		case 'PLAY_2':
+			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length]) {
+				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+				if (filtered.length) {
+					filtered.forEach(e => {
+						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+					});
+				} else {
+					gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+				}
+			}
 			break;
-		case 'PLAY_3':	// TODO
+		case 'PLAY_3':
+			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length]) {
+				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+				if (filtered.length) {
+					filtered.forEach(e => {
+						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+					});
+				} else {
+					gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+				}
+			}
 			break;
 	}
 	for (let i = 0; i < gameData.hands[myIdx][0].length; i++) {
@@ -464,7 +537,7 @@ async function drawGUI(data) { // TODO
 		let div3 = document.createElement('div');
 		div3.innerText = Cards.card2Unicode(card);
 
-		if (!playableCards[card]) div1.classList.add('unplayable');
+		if (!playableCards.has(card)) div1.classList.add('unplayable');
 
 		div1.append(div2, div3);
 		handsSelf.append(div1);
@@ -475,12 +548,13 @@ async function drawGUI(data) { // TODO
 		div1.classList.add('player-' + i);
 		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
 
-		for (let j = 0; j < 6; j++) {
+		for (let j = 0; j < 7; j++) {
 			let div2 = document.createElement('div');
 			div2.classList.add('content-container-text');
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
 
 			if (j == 0) {
+				let relativeTurn = ((i - gameData.turnFirstIdx) % (gameData.turnOrder.length)) + (((i - gameData.turnFirstIdx) % (gameData.turnOrder.length)) < 0 ? gameData.turnOrder.length : 0);
 				if (gameData.gameState == 'SHOW_3' || gameData.gameState == 'SHOW_ALL') {
 					if (gameData.needToAct[i]) {
 						div2.innerText = '✘';
@@ -489,7 +563,7 @@ async function drawGUI(data) { // TODO
 						div2.innerText = '✔';
 						div2.style.color = 'var(--color_green)';
 					}
-				} else if (gameData.gameState == 'PLAY_' + i) {
+				} else if (gameData.gameState == 'PLAY_' + relativeTurn) {
 					div2.innerText = '>>';
 				}
 			} else if (j == 1) {
@@ -502,10 +576,16 @@ async function drawGUI(data) { // TODO
 			} else if (j == 3){
 				div2.innerText = '🂠' + gameData.hands[i][0].length;
 			} else if (j == 4) {
-				div2.innerText = gameData.hands[i][1].map(e => Cards.card2Unicode(e)).join('');
+				if (gameData.gameState == 'SHOW_ALL') {
+					div2.innerText = gameData.hands[i][1].filter(e => gameData.stacks[1].filter(e1 => e1[1] == 4).map(e1 => e1[0]).includes(e)).map(e => Cards.card2Unicode(e)).join('');
+				} else if (gameData.gameState.startsWith('PLAY_')) {
+					div2.innerText = gameData.hands[i][1].map(e => Cards.card2Unicode(e)).join('');
+				}
 			} else if (j == 5) {
-				div2.style.fontSize = '1.5em';
 				div2.innerText = gameData.hands[i][2].map(e => Cards.card2Unicode(e)).join('');
+			} else if (j == 6) {
+				div2.style.fontSize = '1.5em';
+				div2.innerText = gameData.hands[i][3].map(e => Cards.card2Unicode(e)).join('');
 			}
 			div1.append(div2);
 		}
@@ -513,15 +593,18 @@ async function drawGUI(data) { // TODO
 	}
 
 	for (let e of gameData.stacks[1]) {
-		let div1 = document.createElement('div');
+		if ((gameData.gameState == 'SHOW_ALL' && e[1] == 4) || (gameData.gameState.startsWith('PLAY_'))) {
+			let div1 = document.createElement('div');
 
-		let div2 = document.createElement('div');
-		div2.innerText = Cards.card2Unicode(e[0]);
-		let div3 = document.createElement('div');
-		div3.innerText = '(x' + e[1] + ')';
+			let div2 = document.createElement('div');
+			div2.innerText = Cards.card2Unicode(e[0]);
+			let div3 = document.createElement('div');
+			div3.innerText = '(x' + e[1] + ')';
 
-		div1.append(div2, div3);
-		shownCards.append(div1);
+			div1.append(div2, div3);
+
+			shownCards.append(div1);
+		}
 	}
 
 	for (let e of document.querySelectorAll('.game-gui-server-owner')) e.innerText = server.host;
