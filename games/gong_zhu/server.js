@@ -190,12 +190,14 @@ function gameNSL(server) {
 		}
 	}
 
-	gameOFL(server);
+	return gameOFL(server);
 }
 
 function gameOFL(server) {
 	let gameData = server.gameData;
 	let state = gameData.gameState;
+	let ret = [];
+
 	if (state == 'SHOW_3') {
 		for (let i = 0; i < gameData.turnOrder.length; i++) {
 			for (let j = 0; j < 3; j++) gameData.hands[i][0].push(gameData.decks[0].pop());
@@ -236,9 +238,11 @@ function gameOFL(server) {
 			let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
 			important.forEach(e => gameData.hands[winnerIdx][2].push(e));
 
+			ret.push(['Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].join(', ') + ']', 1]);
+
 			gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
 
-			gameData.hands.forEach((e, i) => {
+			gameData.hands.forEach(e => {
 				for (let j = e[1].length - 1; j >= 0; j--) {
 					if (Math.floor(e[1][j] / 13) == trickSuit) {
 						e[1].splice(j, 1);
@@ -246,6 +250,7 @@ function gameOFL(server) {
 				}
 			});
 		}
+		ret.push(['Started Trick ' + (Math.round(gameData.stacks[0].length / 4) + 1) + '; Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] leads...', 1]);
 	} else if (state == 'PLAY_1') {
 
 	} else if (state == 'PLAY_2') {
@@ -259,6 +264,7 @@ function gameOFL(server) {
 	}
 
 	Utils.broadcastGameStateToConnected(users, server);
+	return ret;
 }
 
 export function processCommand(data, ws, server) {
@@ -321,8 +327,8 @@ export function processCommand(data, ws, server) {
 					break;
 				}
 				if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
-					gameNSL(server);
-					ret.push(['Started round ' + gameData.round, 1]);
+					ret.push(...gameNSL(server));
+					ret.push(['Started Round ' + gameData.round, 1]);
 				} else {
 					ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 					status = 0;
@@ -430,10 +436,13 @@ export function processCommand(data, ws, server) {
 						break;
 					}
 
+					ret.push(['Played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][arg1[0]]) + ']', 0]);
+
 					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][arg1[0]]);
 					if (shownIdx != -1) gameData.hands[myIdx][1].splice(shownIdx, 1);
 					gameData.hands[myIdx][3].push(...gameData.hands[myIdx][0].splice(arg1[0], 1));
-					gameNSL(server);
+
+					ret.push(...gameNSL(server));
 				}
 
 				Utils.broadcastGameStateToConnected(users, server);
@@ -452,7 +461,7 @@ export function processCommand(data, ws, server) {
 			} else {
 				gameData.needToAct[myIdx] = 0;
 				if (gameData.needToAct.every(e => e == 0)) {
-					gameNSL(server);
+					ret.push(...gameNSL(server));
 					break;
 				}
 				Utils.broadcastGameStateToConnected(users, server);
