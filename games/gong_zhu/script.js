@@ -32,7 +32,23 @@ function initWebSocket() {
 		url = prompt('Enter WebSocket URL:');
 	}
 
-	ws = new WebSocket(url);
+	try {
+		ws = new WebSocket(url);
+	} catch (e) {
+		Popup.toastPopup('WebSocket error');
+
+		[
+			(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
+			document.querySelector('#lobby-menu'),
+			document.querySelector('#lobby'),
+			document.querySelector('#game')
+		].filter(e => e).forEach(e => e.remove());
+
+		let div = document.createElement('div');
+		div.classList.add('content-text');
+		div.innerText = 'WebSocket connection error, try again another time.';
+		document.body.append(div);
+	}
 
 	ws.addEventListener('message', function(message) {
 

@@ -172,15 +172,15 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 		let username = server.connected[i];
 		let ws = users[username];
 
-		if (obfuscateFunc) {
-			ws.send(JSON.stringify({
-				tag: 'updateGUI',
-				data: {
-					gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
-					serverData: serverInfo
-				}
-			}));
-		} else {
+		// if (obfuscateFunc) {
+		// 	ws.send(JSON.stringify({
+		// 		tag: 'updateGUI',
+		// 		data: {
+		// 			gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+		// 			serverData: serverInfo
+		// 		}
+		// 	}));
+		// } else {
 			ws.send(JSON.stringify({
 				tag: 'updateGUI',
 				data: {
@@ -188,26 +188,26 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 					serverData: serverInfo
 				}
 			}));
-		}
+		// }
 	}
 }
 
 export function broadcastGameState(ws, server, obfuscateFunc = null) {
 	let serverInfo = structuredClone(server);
-	let gameData = structuredClone(server.gameData); // TODO - obfuscate
+	let gameData = structuredClone(server.gameData);
 	delete serverInfo.gameData;
 
 	let username = ws.username;
 
-	if (obfuscateFunc) {
-		ws.send(JSON.stringify({
-			tag: 'updateGUI',
-			data: {
-				gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
-				serverData: serverInfo
-			}
-		}));
-	} else {
+	// if (obfuscateFunc) {
+	// 	ws.send(JSON.stringify({
+	// 		tag: 'updateGUI',
+	// 		data: {
+	// 			gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+	// 			serverData: serverInfo
+	// 		}
+	// 	}));
+	// } else {
 		ws.send(JSON.stringify({
 			tag: 'updateGUI',
 			data: {
@@ -215,5 +215,5 @@ export function broadcastGameState(ws, server, obfuscateFunc = null) {
 				serverData: serverInfo
 			}
 		}));
-	}
+	// }
 }

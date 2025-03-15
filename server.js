@@ -133,7 +133,7 @@ wss.on('connection', function(ws, req) {
 	}
 
 	ws.on('close', function() {
-		console.log('Closed', this.username, this.connected);
+		// console.log('Closed', this.username, this.connected);
 		if (this.username) game.gong_zhu.removeUser(this.username);
 		if (this.connected) {
 			game.gong_zhu.leaveServer(this, this.connected);
