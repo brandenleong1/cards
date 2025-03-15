@@ -82,11 +82,8 @@ let messageDecoder = {
 		}
 
 		game.gong_zhu.initGame(server);
-		// console.log(server.gameData);
-		let serverInfo = structuredClone(server);
-		let gameData = structuredClone(server.gameData); // TODO - obfuscate
-		delete serverInfo.gameData;
-		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', data: {gameData: gameData, serverData: serverInfo}});
+		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
+		Utils.broadcastGameStateToConnected(game.gong_zhu.users, server, game.gong_zhu.obfuscateGameData);
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);

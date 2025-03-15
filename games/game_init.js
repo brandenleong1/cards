@@ -49,6 +49,29 @@ async function init() {
 		document.querySelector('#game-notes').classList.toggle('selected');
 	});
 
+	for (let i = 0; i < 52; i++) {
+		let rank = i % 13;
+		let suit = Math.floor(i / 13);
+
+		let card = Cards.card2Str(i);
+
+		let div = document.createElement('div');
+		div.classList.add('card');
+		div.style.gridColumn = (suit + 1) + ' / ' + (suit + 2);
+		div.style.gridRow = (rank + 1) + ' / ' + (rank + 2);
+
+		let div1 = document.createElement('div');
+		div1.innerText = card;
+
+		let div2 = document.createElement('input');
+		div2.type = 'text';
+		div2.placeholder = '0';
+
+		div.append(div1, div2);
+		document.querySelector('#game-notes-cards').append(div);
+
+	}
+
 	for (let e of document.querySelectorAll('#lobby-settings td:nth-child(1)')) {
 		Popup.createHoverPopup(e.getAttribute('hover-text'), e);
 	}

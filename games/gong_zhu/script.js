@@ -286,7 +286,6 @@ function showLobby(data) {
 					zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
 				}}}));
 			};
-			console.log(e.onchange);
 			e.disabled = false;
 		} else {
 			e.onchange = null;
@@ -334,7 +333,6 @@ function startedGame(data) {
 
 	Utils.clearDiv(document.querySelector('#game-console-output'));
 	Utils.clearDiv(document.querySelector('#game-chat-output'));
-	drawGUI(data);
 }
 
 function sendCommand() {
@@ -351,7 +349,7 @@ function sendCommand() {
 
 function receiveCommand(data) {
 	let output = document.querySelector('#game-console-output');
-	console.log(data.data);
+	console.log('receiveCommand', data);
 	for (let log of data.data) {
 		let code = document.createElement('code');
 		if (!data.status) code.style.color = 'var(--color_red)';
@@ -392,7 +390,7 @@ function receiveChat(data) {
 	if (!Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight)) div.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
-async function drawGUI(data) { // TODO
+async function drawGUI(data) { // TODO animation
 	console.log('drawGUI', data);
 
 	let gameData = data.data.gameData;
@@ -444,33 +442,49 @@ async function drawGUI(data) { // TODO
 	document.querySelector('#game-gui-trick-count').innerText = Math.round(gameData.stacks[0].length / gameData.turnOrder.length) + 1;
 	document.querySelector('#game-gui-game-state').innerText = gameData.gameState;
 
-	let absMaxScore = Math.abs(gameData.scores[0]);
+	let absMaxScore = Math.abs(gameData.scores[0][0]);
 	for (let i of gameData.scores) {
-		if (Math.abs(i) > absMaxScore) absMaxScore = Math.abs(i);
+		if (Math.abs(i[0]) > absMaxScore) absMaxScore = Math.abs(i);
 	}
 
 	let myIdx;
 	for (let i = 0; i < gameData.turnOrder.length; i++) {
+		if (username == gameData.turnOrder[i]) {
+			myIdx = i;
+			break;
+		}
+	}
+
+	let sortedOrder = gameData.scores.map((e, i) => [e[0], i]).toSorted((a, b) => {
+		if (a[0] != b[0]) return b[0] - a[0];
+		else return a[1] - b[1];
+	});
+
+	for (let i = 0; i < sortedOrder.length; i++) {
 		let div1 = document.createElement('div');
 		div1.classList.add('player-' + i);
 		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
 
-		for (let j = 0; j < 3; j++) {
+		for (let j = 0; j < 4; j++) {
 			let div2 = document.createElement('div');
 			div2.classList.add('content-container-text');
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
 
 			if (j == 0) {
-				if (username == gameData.turnOrder[i]) {
+				if (username == gameData.turnOrder[sortedOrder[i][1]]) {
 					div2.innerText = '⭐';
-					myIdx = i;
 				}
 			} else if (j == 1) {
-				div2.innerText = gameData.turnOrder[i];
-			} else {
-				div2.innerText = gameData.scores[i];
-				let percent = Math.abs(gameData.scores[i]) / absMaxScore * 100;
-				div2.style.color = 'color-mix(in srgb, var(--color_' + ((gameData.scores[i] < 0) ? 'red' : 'green') + ') ' + percent + '%, var(--color_black))';
+				div2.innerText = gameData.turnOrder[sortedOrder[i][1]];
+			} else if (j == 2) {
+				div2.innerText = sortedOrder[i][0];
+				let percent = Math.abs(sortedOrder[i][0]) / absMaxScore * 100;
+				div2.style.color = 'color-mix(in srgb, var(--color_' + ((sortedOrder[i][0] < 0) ? 'red' : 'green') + ') ' + percent + '%, var(--color_black))';
+			} else if (j == 3) {
+				if (gameData.scores[sortedOrder[i][1]][1]) {
+					div2.innerText = (gameData.scores[sortedOrder[i][1]][1] > 0 ? '+' : '') + gameData.scores[sortedOrder[i][1]][1];
+					div2.style.color = gameData.scores[sortedOrder[i][1]][1] > 0 ? 'var(--color_green)' : 'var(--color_red)';
+				}
 			}
 			div1.append(div2);
 		}
@@ -548,7 +562,7 @@ async function drawGUI(data) { // TODO
 		div1.classList.add('player-' + i);
 		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
 
-		for (let j = 0; j < 7; j++) {
+		for (let j = 0; j < 8; j++) {
 			let div2 = document.createElement('div');
 			div2.classList.add('content-container-text');
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
@@ -582,8 +596,14 @@ async function drawGUI(data) { // TODO
 					div2.innerText = gameData.hands[i][1].map(e => Cards.card2Unicode(e)).join('');
 				}
 			} else if (j == 5) {
-				div2.innerText = gameData.hands[i][2].map(e => Cards.card2Unicode(e)).join('');
+				div2.style.fontSize = '0.8em';
+				if (gameData.scores[i][1]) {
+					div2.innerText = '(' + (gameData.scores[i][1] > 0 ? '+' : '') + gameData.scores[i][1] + ')';
+					div2.style.color = gameData.scores[i][1] > 0 ? 'var(--color_green)' : 'var(--color_red)';
+				}
 			} else if (j == 6) {
+				div2.innerText = gameData.hands[i][2].map(e => Cards.card2Unicode(e)).join('');
+			} else if (j == 7) {
 				div2.style.fontSize = '1.5em';
 				div2.innerText = gameData.hands[i][3].map(e => Cards.card2Unicode(e)).join('');
 			}

@@ -1,4 +1,4 @@
-export function parseCommand(command, tagArgCounts) {
+export function parseCommand(command, tagArgCounts = {}) {
 	let split = command.trim().match(/[\""].+?[\""]|[^\s]+/g);
 	let parsed = [];
 	let tags = {};

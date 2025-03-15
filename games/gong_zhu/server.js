@@ -135,6 +135,30 @@ export function clearGameData(server) {
 	}
 }
 
+function resetRoundData(server) {
+	let properties = [
+		'decks',
+		'hands',
+		'stacks'
+	];
+	for (let property of properties) {
+		server.gameData[property] = structuredClone(defaultSettings[property]);
+	}
+
+	for (let i = 0; i < server.gameData.numDecks; i++) {
+		server.gameData.decks.push(GameUtils.initDeck());
+		server.gameData.decks[i] = Utils.shuffleArray(server.gameData.decks[i]);
+	}
+
+	for (let i = 0; i < server.connected.length; i++) {
+		server.gameData.hands.push(new Array());
+		for (let j = 0; j < 4; j++) server.gameData.hands[i].push(new Array());
+	}
+
+	server.gameData.scores.forEach(e => e[1] = 0);
+	server.gameData.stacks.forEach(e => e.length = 0);
+}
+
 export function initGame(server) {
 	clearGameData(server);
 	let gameData = server.gameData;
@@ -147,13 +171,14 @@ export function initGame(server) {
 	for (let i = 0; i < server.connected.length; i++) {
 		gameData.hands.push(new Array());
 		for (let j = 0; j < 4; j++) gameData.hands[i].push(new Array());
-		gameData.scores.push(0);
+		gameData.scores.push(new Array());
+		for (let j = 0; j < 2; j++) gameData.scores[i].push(0);
 		gameData.needToAct.push(0);
 	}
 	gameData.turnOrder = Utils.shuffleArray(server.connected);
 
 	gameData.gameState = 'LEADERBOARD';
-	gameData.round = 1;
+	gameData.round = 0;
 	gameData.turnFirstIdx = 0;
 
 	gameOFL(server);
@@ -172,15 +197,19 @@ function gameNSL(server) {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
 		if (server.gameData.hands.every(e => !e[0].length)) {
-			server.gameData.gameState = 'SCORE';
+			if (server.gameData.scores.some(e => e[0] <= server.gameData.settings.losingThreshold)) {
+				server.gameData.gameState = 'LEADERBOARD';
+			} else {
+				server.gameData.gameState = 'SCORE';
+			}
 		} else {
 			server.gameData.gameState = 'PLAY_0';
 		}
 	} else if (server.gameData.gameState == 'SCORE') {
-		if (server.gameData.scores.every(e => e > server.gameData.settings.losingThreshold)) {
-			server.gameData.gameState = 'DEAL_3';
+		if (server.gameData.settings.expose3) {
+			server.gameData.gameState = 'SHOW_3';
 		} else {
-			server.gameData.gameState = 'LEADERBOARD';
+			server.gameData.gameState = 'SHOW_ALL';
 		}
 	}  else if (server.gameData.gameState == 'LEADERBOARD') {
 		if (server.gameData.settings.expose3) {
@@ -199,11 +228,19 @@ function gameOFL(server) {
 	let ret = [];
 
 	if (state == 'SHOW_3') {
+		gameData.round += 1;
+		resetRoundData(server);
+
 		for (let i = 0; i < gameData.turnOrder.length; i++) {
 			for (let j = 0; j < 3; j++) gameData.hands[i][0].push(gameData.decks[0].pop());
 			gameData.needToAct[i] = 1;
 		}
 	} else if (state == 'SHOW_ALL') {
+		if (!gameData.settings.expose3) {
+			gameData.round += 1;
+			resetRoundData(server);
+		}
+
 		while (gameData.decks[0].length) {
 			for (let i = 0; i < gameData.turnOrder.length; i++) {
 				gameData.hands[i][0].push(gameData.decks[0].pop());
@@ -237,8 +274,9 @@ function gameOFL(server) {
 			let played = new Set(gameData.hands.map(e => e[3]).flat());
 			let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
 			important.forEach(e => gameData.hands[winnerIdx][2].push(e));
+			gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
 
-			ret.push(['Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].join(', ') + ']', 1]);
+			ret.push(['Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']', 1]);
 
 			gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
 
@@ -258,12 +296,49 @@ function gameOFL(server) {
 	} else if (state == 'PLAY_3') {
 
 	} else if (state == 'SCORE') {
+		let winnerIdx = gameData.turnFirstIdx;
+		let winnerRank = gameData.hands[gameData.turnFirstIdx][3][0] % 13;
+		let trickSuit = Math.floor(gameData.hands[gameData.turnFirstIdx][3][0] / 13);
+		for (let i = 0; i < gameData.turnOrder.length; i++) {
+			let mySuit = Math.floor(gameData.hands[i][3][0] / 13);
+			let myRank = gameData.hands[i][3][0] % 13;
 
+			if (mySuit == trickSuit) {
+				if (myRank == 0 || (winnerRank != 0 && myRank > winnerRank)) {
+					winnerIdx = i;
+					winnerRank = myRank;
+				}
+			}
+		}
+
+		gameData.turnFirstIdx = winnerIdx;
+
+		let played = new Set(gameData.hands.map(e => e[3]).flat());
+		let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
+		important.forEach(e => gameData.hands[winnerIdx][2].push(e));
+		gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
+
+		ret.push(['Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']', 1]);
+
+		gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
+
+		gameData.hands.forEach(e => {
+			for (let j = e[1].length - 1; j >= 0; j--) {
+				if (Math.floor(e[1][j] / 13) == trickSuit) {
+					e[1].splice(j, 1);
+				}
+			}
+		});
+
+		gameData.scores.forEach((e, i) => {
+			e[0] += e[1];
+			ret.push(['Player [' + gameData.turnOrder[i] + '] receives ' + (e[1] > 0 ? '+' + e[1] : e[1]), 1]);
+		});
 	} else if (state == 'LEADERBOARD') {
 
 	}
 
-	Utils.broadcastGameStateToConnected(users, server);
+	Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 	return ret;
 }
 
@@ -289,8 +364,10 @@ export function processCommand(data, ws, server) {
 			str += 'HELP - display help menu\n';
 			str += 'EXIT - exit back to lobby\n';
 			if (ws.username == server.host) str += 'DEAL - start round\n';
-			str += 'SORT - sorts hand in the specified order\n';
+			str += 'SORT - sorts hand in the specified order, if given\n';
 				str += '\t- unspecified cards retain their order\n';
+				str += '\tSORT\n';
+				str += '\t\talias SORT auto\n';
 				str += '\tSORT [order]\n';
 					str += '\t\te.g. SORT "1 2 7 3 0"\n';
 			str += 'SWAP - swap two cards in your hand\n';
@@ -342,30 +419,32 @@ export function processCommand(data, ws, server) {
 			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 				status = 0;
-			} else if (command.command.length < 2) {
-				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
-				status = 0;
 			} else if (command.command.length > 2) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need 1)', 0]);
+				ret.push(['Too many arguments for [' + commandUpper + '] (need max 1)', 0]);
 				status = 0;
 			} else {
-				let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-				let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
-				if (invalidArgIdx != -1) {
-					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
-					status = 0;
-					break;
-				} else if ((new Set(arg1)).size != arg1.length) {
-					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (duplicate subarguments)', 0]);
-					status = 0;
-					break;
+				if (command.command.length == 1 || command.command[1].trim() == 'auto') {
+					gameData.hands[myIdx][0].sort();
+				} else {
+					let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
+					let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+					if (invalidArgIdx != -1) {
+						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
+						status = 0;
+						break;
+					} else if ((new Set(arg1)).size != arg1.length) {
+						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (duplicate subarguments)', 0]);
+						status = 0;
+						break;
+					}
+
+					gameData.hands[myIdx][0] = Utils.sortArray(gameData.hands[myIdx][0], arg1);
 				}
 
-				gameData.hands[myIdx][0] = Utils.sortArray(gameData.hands[myIdx][0], arg1);
-				Utils.broadcastGameState(ws, server);
+				Utils.broadcastGameState(ws, server, obfuscateGameData);
 			}
 			break;
-		case 'swap':	// TODO
+		case 'swap':	// TODO swap
 			break;
 		case 'play':
 			if (
@@ -445,7 +524,7 @@ export function processCommand(data, ws, server) {
 					ret.push(...gameNSL(server));
 				}
 
-				Utils.broadcastGameStateToConnected(users, server);
+				Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 			}
 			break;
 		case 'pass':
@@ -464,7 +543,7 @@ export function processCommand(data, ws, server) {
 					ret.push(...gameNSL(server));
 					break;
 				}
-				Utils.broadcastGameStateToConnected(users, server);
+				Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 			}
 			break;
 		case 'clear':
@@ -485,4 +564,61 @@ export function processCommand(data, ws, server) {
 	}
 
 	return {tag: 'receiveCommand', status: status, data: ret};
+}
+
+function scoreFromCards(cardArr, server) {
+	let c = 0;
+
+	let cardSet = new Set(cardArr);
+	let heartSet = new Set(new Array(13).fill(0).map((e, i) => i + 13));
+
+	let modifiers = [11, 13, 36, 48].reduce((dict, e) => {
+		let idx = server.gameData.stacks[1].findIndex(card => card[0] == e)
+		dict[e] = (idx == -1 ? 1 : server.gameData.stacks[1][idx][1]);
+		return dict;
+	}, {});
+
+	if (cardSet.isSupersetOf(heartSet)) {
+		c += modifiers[13] * 200;
+
+		if (server.gameData.settings.zhuYangManJuan) {
+			if (cardSet.has(11) && cardSet.has(36)) c += modifiers[11] * 100;
+		} else {
+			if (cardSet.has(11)) c += modifiers[11] * 100;
+		}
+	} else {
+		if (cardSet.has(11)) c += modifiers[11] * -100;
+		if (cardSet.has(13)) c += modifiers[13] * -50;
+		if (cardSet.has(25)) c += modifiers[13] * -40;
+		if (cardSet.has(24)) c += modifiers[13] * -30;
+		if (cardSet.has(23)) c += modifiers[13] * -20;
+		for (let i = 17; i <= 22; i++) if (cardSet.has(i)) c += modifiers[13] * -10;
+		if (cardSet.has(36)) c += modifiers[36] * 100;
+	}
+
+
+	if (cardSet.has(48)) {
+		if (cardSet.size == 1) {
+			c += modifiers[48] * 50;
+		} else {
+			c *= modifiers[48] * 2;
+		}
+	}
+
+	return c;
+}
+
+export function obfuscateGameData(gameData, idx) {
+	let gameDataCopy = structuredClone(gameData);
+
+	Utils.nullify(gameDataCopy.decks);
+	gameDataCopy.hands.forEach((hand, i) => {
+		if (i != idx) Utils.nullify(hand);
+	});
+	Utils.nullify(gameDataCopy.stacks[0]);
+	gameDataCopy.stacks[1] = gameDataCopy.stacks[1].filter(e =>
+		!((gameDataCopy.gameState == 'SHOW_3' && e[1] == 4) || (gameDataCopy.gameState == 'SHOW_ALL' && e[1] == 2))
+	);
+
+	return gameDataCopy;
 }

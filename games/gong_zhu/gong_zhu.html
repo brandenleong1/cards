@@ -232,7 +232,12 @@
 		<div class="content-container-horizontal" id="game" style="display: none; height: calc(100vh - 40px);">
 		<!-- <div class="content-container-horizontal" id="game" style="height: calc(100vh - 40px);"> -->
 			<div id="game-notes">
-				<div id="game-notes-btn"><span>&#x27E8</span></div>
+				<div class="content-container-vertical" id="game-notes-container">
+					<div class="content-header-2">Notes</div>
+					<div id="game-notes-cards"></div>
+					<textarea placeholder="Write notes here..."></textarea>
+					<div id="game-notes-btn"><span>&#x27E8</span></div>
+				</div>
 			</div>
 
 			<div class="content-container-vertical" style="flex: 100 1 0; height: 100%; width: 0; row-gap: 10px;">
@@ -257,7 +262,7 @@
 						<div class="content-break-vertical"></div>
 						<div id="game-gui-leaderboard"></div>
 						<div class="content-break-vertical"></div>
-						<div id="game-gui-help-next-round" style="display: none;"><span class="game-gui-server-owner">[Server Owner]</span>, enter <code>DEAL</code> to start round.</div>
+						<div id="game-gui-help-next-round" style="display: none;"><span class="game-gui-server-owner">[Server Owner]</span>, enter <code>DEAL</code> to start the next round.</div>
 						<div id="game-gui-help-next-game" style="display: none;">
 							<div><span class="game-gui-server-owner">[Server Owner]</span>, enter <code>DEAL</code> to start the next game.</div>
 							<div><span class="game-gui-server-owner">[Server Owner]</span>, enter <code>EXIT</code> to return to the lobby (change settings).</div>

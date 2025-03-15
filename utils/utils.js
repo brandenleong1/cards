@@ -146,6 +146,16 @@ export function sortArray(arr, indices) {
 	return newArr;
 }
 
+export function nullify(arr) {
+	for (let i = 0; i < arr.length; i++) {
+		if (Array.isArray(arr[i])) {
+			nullify(arr[i]);
+		} else {
+			arr[i] = null;
+		}
+	}
+}
+
 export function broadcastToConnected(users, server, data, ...ignoredUsernames) {
 	for (let username of server.connected) {
 		let ws = users[username];
@@ -153,22 +163,57 @@ export function broadcastToConnected(users, server, data, ...ignoredUsernames) {
 	}
 }
 
-export function broadcastGameStateToConnected(users, server) {
+export function broadcastGameStateToConnected(users, server, obfuscateFunc = null) {
 	let serverInfo = structuredClone(server);
-	let gameData = structuredClone(server.gameData); // TODO - obfuscate
+	let gameData = structuredClone(server.gameData);
 	delete serverInfo.gameData;
-	broadcastToConnected(users, server, {
-		tag: 'updateGUI',
-		data: {gameData: gameData, serverData: serverInfo}
-	});
+
+	for (let i = 0; i < server.connected.length; i++) {
+		let username = server.connected[i];
+		let ws = users[username];
+
+		if (obfuscateFunc) {
+			ws.send(JSON.stringify({
+				tag: 'updateGUI',
+				data: {
+					gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+					serverData: serverInfo
+				}
+			}));
+		} else {
+			ws.send(JSON.stringify({
+				tag: 'updateGUI',
+				data: {
+					gameData: gameData,
+					serverData: serverInfo
+				}
+			}));
+		}
+	}
 }
 
-export function broadcastGameState(ws, server) {
+export function broadcastGameState(ws, server, obfuscateFunc = null) {
 	let serverInfo = structuredClone(server);
 	let gameData = structuredClone(server.gameData); // TODO - obfuscate
 	delete serverInfo.gameData;
-	ws.send(JSON.stringify({
-		tag: 'updateGUI',
-		data: {gameData: gameData, serverData: serverInfo}
-	}));
+
+	let username = ws.username;
+
+	if (obfuscateFunc) {
+		ws.send(JSON.stringify({
+			tag: 'updateGUI',
+			data: {
+				gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+				serverData: serverInfo
+			}
+		}));
+	} else {
+		ws.send(JSON.stringify({
+			tag: 'updateGUI',
+			data: {
+				gameData: gameData,
+				serverData: serverInfo
+			}
+		}));
+	}
 }

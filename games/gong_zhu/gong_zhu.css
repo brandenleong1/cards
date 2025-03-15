@@ -8,7 +8,7 @@
 
 #game-gui-hands {
 	display: grid;
-	grid-template-columns: repeat(7, max-content);
+	grid-template-columns: repeat(8, max-content);
 	grid-template-rows: repeat(4, auto);
 	row-gap: 5px;
 }
@@ -108,7 +108,7 @@
 #game-gui-leaderboard {
 	display: grid;
 	grid-template-columns: repeat(4, max-content);
-	grid-template-rows: repeat(3, auto);
+	grid-template-rows: repeat(4, auto);
 	row-gap: 5px;
 }
 
