@@ -134,7 +134,6 @@ wss.on('connection', function(ws, req) {
 
 	ws.on('close', function() {
 		console.log('Closed', this.username, this.connected);
-		console.log(game.gong_zhu.servers);
 		if (this.username) game.gong_zhu.removeUser(this.username);
 		if (this.connected) {
 			game.gong_zhu.leaveServer(this, this.connected);
@@ -147,7 +146,6 @@ wss.on('connection', function(ws, req) {
 				{tag: 'otherLeftLobby', status: 1, data: this.connected}
 			)
 		}
-		console.log(game.gong_zhu.servers);
 		for (let ws of wss.clients) {
 			ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
 		}

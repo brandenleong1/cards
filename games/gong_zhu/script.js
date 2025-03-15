@@ -1,5 +1,4 @@
 let ws;
-// let ws = new WebSocket('ws' + window.location.href.substring(window.location.href.indexOf(':')));
 
 let username;
 let gameDataOld, gameDataNew;
@@ -25,11 +24,17 @@ let messageDecoder = {
 
 
 function initWebSocket() {
-	ws = new WebSocket('http://localhost:8080');
-	// ws = new WebSocket('https://fxvw5vx2-8080.usw3.devtunnels.ms/');
+	// ws = new WebSocket('http://localhost:8080');
+	let urlParams = new URLSearchParams(window.location.search);
+	let url = urlParams.get('url');
+
+	if (!url) {
+		url = prompt('Enter WebSocket URL:');
+	}
+
+	ws = new WebSocket(url);
 
 	ws.addEventListener('message', function(message) {
-		// console.log(message);
 
 		let data = JSON.parse(message.data);
 		let tags = data.tag.split('/');
