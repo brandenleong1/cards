@@ -361,6 +361,7 @@ function startGame() {
 }
 
 function startedGame(data) {
+	console.log('started');
 	document.querySelector('#title').style.display = 'none';
 	document.querySelector('#lobby').style.display = 'none';
 	document.querySelector('#game').style.display = null;

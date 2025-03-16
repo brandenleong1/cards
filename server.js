@@ -39,7 +39,7 @@ let messageDecoder = {
 				username: ws.username,
 				sessionID: ws.sessionID
 			}}));
-			// console.log('server', server);
+			console.log(server.name);
 			if (server) {
 				if (server.gameData.gameState == '') {
 					ws.send(JSON.stringify({tag: 'joinedLobby', status: 1, data: server}));
