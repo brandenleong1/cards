@@ -2,8 +2,8 @@ import * as Utils from '../../utils/utils.js';
 import * as GameUtils from '../../utils/game_utils.js';
 import * as CommandParse from '../../utils/command_parse.js';
 
-export let users = new Map(); // Username => WS
-let usernames = new Map();
+export let users = new Map();		// Username => WS
+export let usernames = new Map();	// Username => Count
 
 export let servers = [];
 
@@ -44,7 +44,7 @@ export function addUser(username) {
 	} else {
 		let t = Math.floor(Math.random() * 10000).toString(10).padStart(4, '0');
 		let user = username + '#' + t;
-		usernames[username] = 1;
+		usernames.set(username, 1);
 		return [1, user];
 	}
 }
@@ -388,6 +388,7 @@ export function processCommand(data, ws, server) {
 				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
 				status = 0;
 			} else {
+				server.gameData.gameState = '';
 				Utils.broadcastToConnected(users, server,
 					{tag: 'broadcastedMessage', data: '[' + ws.username + '] exited to lobby'}
 				);
@@ -515,7 +516,7 @@ export function processCommand(data, ws, server) {
 						break;
 					}
 
-					ret.push(['Played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][arg1[0]]) + ']', 0]);
+					ret.push(['Player [' +  gameData.turnOrder[myIdx] + '] played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][arg1[0]]) + ']', 1]);
 
 					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][arg1[0]]);
 					if (shownIdx != -1) gameData.hands[myIdx][1].splice(shownIdx, 1);
@@ -613,7 +614,7 @@ export function obfuscateGameData(gameData, idx) {
 
 	Utils.nullify(gameDataCopy.decks);
 	gameDataCopy.hands.forEach((hand, i) => {
-		if (i != idx) Utils.nullify(hand);
+		if (i != idx) Utils.nullify(hand[0]);
 	});
 	Utils.nullify(gameDataCopy.stacks[0]);
 	gameDataCopy.stacks[1] = gameDataCopy.stacks[1].filter(e =>

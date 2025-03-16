@@ -3,10 +3,12 @@ let ws;
 let username;
 let gameDataOld, gameDataNew;
 let animatingGUI = false;
-let handlers = {};
+let handlers = new Map();
 
 let messageDecoder = {
 	'broadcastedMessage':	(data) => {Popup.toastPopup(data.data);},
+	'updateSessionID':		(data) => {updateSessionID(data);},
+	'receiveSessionID':		(data) => {receiveSessionID(data);},
 	'receiveUsername':		(data) => {receiveUsername(data);},
 	'updateUserCount':		(data) => {updateUserCount(data);},
 	'updateLobbies':		(data) => {updateLobbies(data);},
@@ -34,66 +36,77 @@ function initWebSocket() {
 
 	try {
 		ws = new WebSocket(url);
-	} catch (e) {
-		Popup.toastPopup('WebSocket error');
 
-		[
-			(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
-			document.querySelector('#lobby-menu'),
-			document.querySelector('#lobby'),
-			document.querySelector('#game')
-		].filter(e => e).forEach(e => e.remove());
+		ws.addEventListener('open', function(e) {
+			if (Cookies.getCookie('sessionID')) {
+				ws.send(JSON.stringify({tag: 'checkSessionID', data: Cookies.getCookie('sessionID')}));
+			} else {
+				ws.send(JSON.stringify({tag: 'requestSessionID'}));
+			}
+		});
 
-		let div = document.createElement('div');
-		div.classList.add('content-text');
-		div.innerText = 'WebSocket connection error, try again another time.';
-		document.body.append(div);
+		ws.addEventListener('message', function(message) {
+			let data = JSON.parse(message.data);
+			let tags = data.tag.split('/');
+			let func;
+			for (let i = 0; i < tags.length; i++) {
+				if (!i) func = messageDecoder[tags[i]];
+				else func = func[tags[i]];
+			}
+			if (func) func(data);
+		});
+
+		ws.addEventListener('close', function(e) {
+			console.log('WebSocket close:', e);
+			Popup.toastPopup('WebSocket closed');
+
+			[
+				(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
+				document.querySelector('#lobby-menu'),
+				document.querySelector('#lobby'),
+				document.querySelector('#game')
+			].filter(e => e).forEach(e => e.remove());
+
+			let div = document.createElement('div');
+			div.classList.add('content-text');
+			div.innerText = 'WebSocket connection closed, try again another time.';
+			document.body.append(div);
+		});
+
+		ws.addEventListener('error', function(e) {
+			console.log('WebSocket error:', e);
+			Popup.toastPopup('WebSocket error');
+
+			[
+				(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
+				document.querySelector('#lobby-menu'),
+				document.querySelector('#lobby'),
+				document.querySelector('#game')
+			].filter(e => e).forEach(e => e.remove());
+
+			let div = document.createElement('div');
+			div.classList.add('content-text');
+			div.innerText = 'WebSocket connection error, try again another time.';
+			document.body.append(div);
+
+			setTimeout(location.reload, 1000);
+		});
+	} catch (e) {}
+}
+
+function updateSessionID(data) {
+	if (data.status) {
+		username = data.data.username;
+		Cookies.setCookie('sessionID', data.data.sessionID, 30 * 60 * 1000);
 	}
+}
 
-	ws.addEventListener('message', function(message) {
+function receiveSessionID(data) {
+	Cookies.setCookie('sessionID', data.data, 30 * 60 * 1000);
+}
 
-		let data = JSON.parse(message.data);
-		let tags = data.tag.split('/');
-		let func;
-		for (let i = 0; i < tags.length; i++) {
-			if (!i) func = messageDecoder[tags[i]];
-			else func = func[tags[i]];
-		}
-		if (func) func(data);
-	});
-
-	ws.addEventListener('close', function(e) {
-		Popup.toastPopup('WebSocket closed');
-
-		[
-			(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
-			document.querySelector('#lobby-menu'),
-			document.querySelector('#lobby'),
-			document.querySelector('#game')
-		].filter(e => e).forEach(e => e.remove());
-
-		let div = document.createElement('div');
-		div.classList.add('content-text');
-		div.innerText = 'WebSocket connection closed, try again another time.';
-		document.body.append(div);
-	});
-
-	ws.addEventListener('error', function(e) {
-		console.log('WebSocket error:', e);
-		Popup.toastPopup('WebSocket error');
-
-		[
-			(document.querySelector('#submit-username-btn') ? document.querySelector('#submit-username-btn').parentElement : null),
-			document.querySelector('#lobby-menu'),
-			document.querySelector('#lobby'),
-			document.querySelector('#game')
-		].filter(e => e).forEach(e => e.remove());
-
-		let div = document.createElement('div');
-		div.classList.add('content-text');
-		div.innerText = 'WebSocket connection error, try again another time.';
-		document.body.append(div);
-	});
+function refreshSessionIDCookie() {
+	Cookies.setCookie('sessionID', Cookies.getCookie('sessionID'), 30 * 60 * 1000);
 }
 
 function submitUsername() {
@@ -108,6 +121,8 @@ function submitUsername() {
 
 		ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
 	}
+
+	refreshSessionIDCookie();
 }
 
 function receiveUsername(data) {
@@ -135,6 +150,7 @@ function receiveUsername(data) {
 
 function getLobbies() {
 	ws.send(JSON.stringify({tag: 'getLobbies'}));
+	refreshSessionIDCookie();
 }
 
 function updateUserCount(data) {
@@ -253,6 +269,7 @@ function createLobby() {
 	}
 
 	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}}));
+	refreshSessionIDCookie();
 }
 
 function joinLobby(data) {
@@ -261,6 +278,7 @@ function joinLobby(data) {
 		return;
 	}
 	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data}));
+	refreshSessionIDCookie();
 }
 
 function showLobby(data) {
@@ -319,6 +337,7 @@ function showLobby(data) {
 
 function leaveLobby() {
 	ws.send(JSON.stringify({tag: 'leaveLobby'}));
+	refreshSessionIDCookie();
 }
 
 function leftLobby(data) {
@@ -345,6 +364,7 @@ function otherLeftLobby(data) {
 
 function startGame() {
 	ws.send(JSON.stringify({tag: 'startGame'}));
+	refreshSessionIDCookie();
 }
 
 function startedGame(data) {
@@ -366,6 +386,7 @@ function sendCommand() {
 		document.querySelector('#game-console-input').value = '';
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}
+	refreshSessionIDCookie();
 }
 
 function receiveCommand(data) {
@@ -386,6 +407,7 @@ function sendChat() {
 		ws.send(JSON.stringify({tag: 'sendChat', data: data}));
 		document.querySelector('#game-chat-input').value = '';
 	}
+	refreshSessionIDCookie();
 }
 
 function receiveChat(data) {

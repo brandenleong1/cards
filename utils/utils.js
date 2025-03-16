@@ -1,3 +1,5 @@
+import * as crypto from 'crypto';
+
 // ms: number
 export function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -172,15 +174,15 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 		let username = server.connected[i];
 		let ws = users[username];
 
-		// if (obfuscateFunc) {
-		// 	ws.send(JSON.stringify({
-		// 		tag: 'updateGUI',
-		// 		data: {
-		// 			gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
-		// 			serverData: serverInfo
-		// 		}
-		// 	}));
-		// } else {
+		if (obfuscateFunc) {
+			ws.send(JSON.stringify({
+				tag: 'updateGUI',
+				data: {
+					gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+					serverData: serverInfo
+				}
+			}));
+		} else {
 			ws.send(JSON.stringify({
 				tag: 'updateGUI',
 				data: {
@@ -188,7 +190,7 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 					serverData: serverInfo
 				}
 			}));
-		// }
+		}
 	}
 }
 
@@ -199,15 +201,15 @@ export function broadcastGameState(ws, server, obfuscateFunc = null) {
 
 	let username = ws.username;
 
-	// if (obfuscateFunc) {
-	// 	ws.send(JSON.stringify({
-	// 		tag: 'updateGUI',
-	// 		data: {
-	// 			gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
-	// 			serverData: serverInfo
-	// 		}
-	// 	}));
-	// } else {
+	if (obfuscateFunc) {
+		ws.send(JSON.stringify({
+			tag: 'updateGUI',
+			data: {
+				gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+				serverData: serverInfo
+			}
+		}));
+	} else {
 		ws.send(JSON.stringify({
 			tag: 'updateGUI',
 			data: {
@@ -215,5 +217,24 @@ export function broadcastGameState(ws, server, obfuscateFunc = null) {
 				serverData: serverInfo
 			}
 		}));
-	// }
+	}
+}
+
+export function generateSessionID(sessionIDs) {
+	let sessionID = crypto.randomBytes(16).toString('hex');
+	while (sessionIDs.has(sessionID)) sessionID = crypto.randomBytes(16).toString('hex');
+	return sessionID;
+}
+
+export function purgeArchive(archive, olderThan = 60 * 1000) {
+	let now = Date.now();
+	let purged = new Set();
+	archive.forEach((val, key) => {
+		if (now - val > olderThan) {
+			purged.add(key);
+			archive.delete(key);
+		}
+	});
+
+	return purged;
 }

@@ -2,7 +2,6 @@ const express = require('express');
 const path = require('path');
 const http = require('http');
 const ws = require('ws');
-const { updateServerSettings } = require('./games/gong_zhu/server');
 
 const game = {
 	gong_zhu: require(path.resolve(__dirname, './games/gong_zhu/server.js'))
@@ -18,12 +17,52 @@ const app_port = process.env.PORT || 8080;
 const server = http.createServer(app);
 const wss = new ws.Server({server});
 
+let wssClientsArchive = new Map();	// WS Info => Disconnect Time
+
 let messageDecoder = {
+	'checkSessionID': (ws, data) => {
+		let archive = Array.from(wssClientsArchive.keys()).forEach(e => JSON.parse(e));
+		let res = archive.find(ws => ws.sessionID == data.data);
+		if (res) {
+			ws.username = res.username;
+			ws.sessionID = res.sessionID;
+			let idx = game.gong_zhu.getServerIdx(res.connected);
+			let server = null;
+			if (idx != -1) {
+				server = game.gong_zhu.servers[idx];
+				ws.connected = server;
+			}
+			wssClientsArchive.delete(JSON.stringify(res));
+			ws.send(JSON.stringify({tag: 'updateSessionID', status: 1, data: {
+				username: ws.username,
+				sessionID: ws.sessionID,
+			}}));
+			if (server) {
+				if (server.name == '') {
+					ws.send(JSON.stringify({tag: 'joinedLobby', status: 1, data: server}));
+				} else {
+					Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
+					Utils.broadcastGameStateToConnected(game.gong_zhu.users, server, game.gong_zhu.obfuscateGameData);
+				}
+			}
+		} else {
+			let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
+			let res = Utils.generateSessionID(sessionIDs);
+			ws.sessionID = res;
+			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 1, data: res}));
+		}
+	},
+	'requestSessionID': (ws, data) => {
+		let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
+		let res = Utils.generateSessionID(sessionIDs);
+		ws.sessionID = res;
+		ws.send(JSON.stringify({tag: 'receiveSessionID', status: 1, data: res}));
+	},
 	'requestUsername': (ws, data) => {
 		let res = game.gong_zhu.addUser(data.data);
 		if (res[0]) {
 			ws.username = res[1];
-			game.gong_zhu.users[res[1]] = ws;
+			game.gong_zhu.users.set(res[1], ws);
 		}
 		ws.send(JSON.stringify({tag: 'receiveUsername', status: res[0], data: res[1]}));
 	},
@@ -83,7 +122,7 @@ let messageDecoder = {
 
 		game.gong_zhu.initGame(server);
 		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
-		Utils.broadcastGameStateToConnected(game.gong_zhu.users, server, game.gong_zhu.obfuscateGameData);
+		// Utils.broadcastGameStateToConnected(game.gong_zhu.users, server, game.gong_zhu.obfuscateGameData);
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -111,9 +150,46 @@ let messageDecoder = {
 	}
 };
 
+wss.on('listening', function() {
+	setInterval(function() {
+		let purged = Utils.purgeArchive(wssClientsArchive);
+
+		purged.forEach(e => {
+			let ws = JSON.parse(e);
+			console.log(ws);
+			if (ws.username) game.gong_zhu.removeUser(ws.username);
+			if (ws.connected) {
+				game.gong_zhu.leaveServer(ws, ws.connected);
+				if (this.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+					this.connected,
+					{tag: 'joinedLobby', status: 1, data: this.connected}
+				);
+				else Utils.broadcastToConnected(game.gong_zhu.users, 
+					this.connected,
+					{tag: 'otherLeftLobby', status: 1, data: this.connected}
+				)
+			}
+			for (let ws of wss.clients) {
+				ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+			}
+		});
+
+		console.log('After Purge:', wssClientsArchive);
+		console.log('Server length:', game.gong_zhu.servers.length);
+		console.log('Users size:', game.gong_zhu.users.size);
+		console.log('Usernames:', game.gong_zhu.usernames);
+	}, 60 * 1000);
+});
+
 wss.on('connection', function(ws, req) {
-	console.log('Connection:', req.url);
+	console.log('Connection:', req.socket.remoteAddress);
 	console.log('Users:', wss.clients.size);
+
+	let timeout = Math.max(wss._server.keepAliveTimeout - 1000, 1000);
+	if (!ws.handlers) ws.handlers = new Map();
+	ws.handlers.ping = setInterval(function() {
+		ws.ping();
+	}, timeout);
 
 	ws.on('message', function(data, isBinary) {
 		data = isBinary ? data : data.toString();
@@ -133,22 +209,40 @@ wss.on('connection', function(ws, req) {
 	}
 
 	ws.on('close', function() {
-		// console.log('Closed', this.username, this.connected);
-		if (this.username) game.gong_zhu.removeUser(this.username);
-		if (this.connected) {
-			game.gong_zhu.leaveServer(this, this.connected);
-			if (this.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
-				this.connected,
-				{tag: 'joinedLobby', status: 1, data: this.connected}
-			);
-			else Utils.broadcastToConnected(game.gong_zhu.users, 
-				this.connected,
-				{tag: 'otherLeftLobby', status: 1, data: this.connected}
-			)
+		clearInterval(this.handlers.ping);
+		console.log('Closed', this.username, this.connected);
+
+		let oldWs = {
+			username: this.username,
+			sessionID: this.sessionID,
+			connected: this.connected ? {
+				name: this.connected.name,
+				time: this.connected.time,
+				creator: this.connected.creator
+			} : undefined
+		};
+
+		if (this.username) {
+			wssClientsArchive.set(JSON.stringify(oldWs), Date.now());
 		}
-		for (let ws of wss.clients) {
-			ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
-		}
+
+		console.log('WS Close | Users:', game.gong_zhu.users);
+
+		// if (this.username) game.gong_zhu.removeUser(this.username);
+		// if (this.connected) {
+		// 	game.gong_zhu.leaveServer(this, this.connected);
+		// 	if (this.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+		// 		this.connected,
+		// 		{tag: 'joinedLobby', status: 1, data: this.connected}
+		// 	);
+		// 	else Utils.broadcastToConnected(game.gong_zhu.users, 
+		// 		this.connected,
+		// 		{tag: 'otherLeftLobby', status: 1, data: this.connected}
+		// 	)
+		// }
+		// for (let ws of wss.clients) {
+		// 	ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+		// }
 	});
 });
 
