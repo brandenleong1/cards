@@ -160,8 +160,8 @@ export function nullify(arr) {
 
 export function broadcastToConnected(users, server, data, ...ignoredUsernames) {
 	for (let username of server.connected) {
-		let ws = users[username];
-		if (!ignoredUsernames.includes(username)) ws.send(JSON.stringify(data));
+		let ws = users.get(username);
+		if (!ignoredUsernames.includes(username) && ws.active) ws.send(JSON.stringify(data));
 	}
 }
 
@@ -172,24 +172,26 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 
 	for (let i = 0; i < server.connected.length; i++) {
 		let username = server.connected[i];
-		let ws = users[username];
+		let ws = users.get(username);
 
-		if (obfuscateFunc) {
-			ws.send(JSON.stringify({
-				tag: 'updateGUI',
-				data: {
-					gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
-					serverData: serverInfo
-				}
-			}));
-		} else {
-			ws.send(JSON.stringify({
-				tag: 'updateGUI',
-				data: {
-					gameData: gameData,
-					serverData: serverInfo
-				}
-			}));
+		if (ws.active) {
+			if (obfuscateFunc) {
+				ws.send(JSON.stringify({
+					tag: 'updateGUI',
+					data: {
+						gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
+						serverData: serverInfo
+					}
+				}));
+			} else {
+				ws.send(JSON.stringify({
+					tag: 'updateGUI',
+					data: {
+						gameData: gameData,
+						serverData: serverInfo
+					}
+				}));
+			}
 		}
 	}
 }

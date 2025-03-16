@@ -7,7 +7,6 @@ let handlers = new Map();
 
 let messageDecoder = {
 	'broadcastedMessage':	(data) => {Popup.toastPopup(data.data);},
-	'updateSessionID':		(data) => {updateSessionID(data);},
 	'receiveSessionID':		(data) => {receiveSessionID(data);},
 	'receiveUsername':		(data) => {receiveUsername(data);},
 	'updateUserCount':		(data) => {updateUserCount(data);},
@@ -94,15 +93,12 @@ function initWebSocket() {
 	} catch (e) {}
 }
 
-function updateSessionID(data) {
+function receiveSessionID(data) {
 	if (data.status) {
 		username = data.data.username;
-		Cookies.setCookie('sessionID', data.data.sessionID, 30 * 60 * 1000);
 	}
-}
-
-function receiveSessionID(data) {
-	Cookies.setCookie('sessionID', data.data, 30 * 60 * 1000);
+	Cookies.setCookie('sessionID', data.data.sessionID, 30 * 60 * 1000);
+	document.querySelector('#username-div').style.display = null;
 }
 
 function refreshSessionIDCookie() {
@@ -140,7 +136,7 @@ function receiveUsername(data) {
 		username = data.data;
 
 		getLobbies();
-		handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
+		handlers.set('lobbyRefresh', setInterval(getLobbies, 2000));
 
 		document.querySelector('#lobby-menu').style.display = null;
 	}
@@ -332,7 +328,7 @@ function showLobby(data) {
 		}
 	}
 
-	if (handlers['lobbyRefresh']) clearInterval(handlers['lobbyRefresh']);
+	if (handlers.get('lobbyRefresh')) clearInterval(handlers.get('lobbyRefresh'));
 }
 
 function leaveLobby() {
@@ -347,7 +343,7 @@ function leftLobby(data) {
 	}
 
 	getLobbies();
-	handlers['lobbyRefresh'] = setInterval(getLobbies, 2000);
+	handlers.set('lobbyRefresh', setInterval(getLobbies, 2000));
 
 	document.querySelector('#username-div').style.display = null;
 	document.querySelector('#lobby-menu').style.display = null;

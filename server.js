@@ -21,8 +21,10 @@ let wssClientsArchive = new Map();	// WS Info => Disconnect Time
 
 let messageDecoder = {
 	'checkSessionID': (ws, data) => {
-		let archive = Array.from(wssClientsArchive.keys()).forEach(e => JSON.parse(e));
+		// console.log('test', Array.from(wssClientsArchive.keys()))
+		let archive = Array.from(wssClientsArchive.keys()).map(e => JSON.parse(e));
 		let res = archive.find(ws => ws.sessionID == data.data);
+		// console.log('checkSessionID', res);
 		if (res) {
 			ws.username = res.username;
 			ws.sessionID = res.sessionID;
@@ -33,12 +35,13 @@ let messageDecoder = {
 				ws.connected = server;
 			}
 			wssClientsArchive.delete(JSON.stringify(res));
-			ws.send(JSON.stringify({tag: 'updateSessionID', status: 1, data: {
+			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 1, data: {
 				username: ws.username,
-				sessionID: ws.sessionID,
+				sessionID: ws.sessionID
 			}}));
+			// console.log('server', server);
 			if (server) {
-				if (server.name == '') {
+				if (server.gameData.gameState == '') {
 					ws.send(JSON.stringify({tag: 'joinedLobby', status: 1, data: server}));
 				} else {
 					Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
@@ -49,14 +52,18 @@ let messageDecoder = {
 			let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
 			let res = Utils.generateSessionID(sessionIDs);
 			ws.sessionID = res;
-			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 1, data: res}));
+			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 0, data: {
+				sessionID: res
+			}}));
 		}
 	},
 	'requestSessionID': (ws, data) => {
 		let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
 		let res = Utils.generateSessionID(sessionIDs);
 		ws.sessionID = res;
-		ws.send(JSON.stringify({tag: 'receiveSessionID', status: 1, data: res}));
+		ws.send(JSON.stringify({tag: 'receiveSessionID', status: 0, data: {
+			sessionID: res
+		}}));
 	},
 	'requestUsername': (ws, data) => {
 		let res = game.gong_zhu.addUser(data.data);
@@ -156,7 +163,6 @@ wss.on('listening', function() {
 
 		purged.forEach(e => {
 			let ws = JSON.parse(e);
-			console.log(ws);
 			if (ws.username) game.gong_zhu.removeUser(ws.username);
 			if (ws.connected) {
 				game.gong_zhu.leaveServer(ws, ws.connected);
@@ -174,10 +180,12 @@ wss.on('listening', function() {
 			}
 		});
 
-		console.log('After Purge:', wssClientsArchive);
-		console.log('Server length:', game.gong_zhu.servers.length);
-		console.log('Users size:', game.gong_zhu.users.size);
-		console.log('Usernames:', game.gong_zhu.usernames);
+		console.table({
+			servers: game.gong_zhu.servers.length,
+			users: game.gong_zhu.users.size,
+			purged: purged.size,
+			archived: wssClientsArchive.size
+		});
 	}, 60 * 1000);
 });
 
@@ -190,6 +198,12 @@ wss.on('connection', function(ws, req) {
 	ws.handlers.ping = setInterval(function() {
 		ws.ping();
 	}, timeout);
+
+	ws.active = 1;
+
+	for (let ws of wss.clients) {
+		ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+	}
 
 	ws.on('message', function(data, isBinary) {
 		data = isBinary ? data : data.toString();
@@ -204,10 +218,6 @@ wss.on('connection', function(ws, req) {
 		if (func) func(ws, data);
 	});
 
-	for (let ws of wss.clients) {
-		ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
-	}
-
 	ws.on('close', function() {
 		clearInterval(this.handlers.ping);
 		console.log('Closed', this.username, this.connected);
@@ -219,14 +229,15 @@ wss.on('connection', function(ws, req) {
 				name: this.connected.name,
 				time: this.connected.time,
 				creator: this.connected.creator
-			} : undefined
+			} : undefined,
+			active: 0
 		};
 
-		if (this.username) {
+		if (this.username && this.connected) {
 			wssClientsArchive.set(JSON.stringify(oldWs), Date.now());
 		}
 
-		console.log('WS Close | Users:', game.gong_zhu.users);
+		// console.log('WS Close | Users:', game.gong_zhu.users);
 
 		// if (this.username) game.gong_zhu.removeUser(this.username);
 		// if (this.connected) {
