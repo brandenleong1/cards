@@ -99,6 +99,10 @@ function receiveSessionID(data) {
 	}
 	Cookies.setCookie('sessionID', data.data.sessionID, 30 * 60 * 1000);
 	document.querySelector('#username-div').style.display = null;
+
+	handlers.set('sessionIDRefresh', setInterval(function() {
+		refreshSessionIDCookie();
+	}, 5000));
 }
 
 function refreshSessionIDCookie() {
@@ -117,8 +121,6 @@ function submitUsername() {
 
 		ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
 	}
-
-	refreshSessionIDCookie();
 }
 
 function receiveUsername(data) {
@@ -146,7 +148,6 @@ function receiveUsername(data) {
 
 function getLobbies() {
 	ws.send(JSON.stringify({tag: 'getLobbies'}));
-	refreshSessionIDCookie();
 }
 
 function updateUserCount(data) {
@@ -265,7 +266,6 @@ function createLobby() {
 	}
 
 	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}}));
-	refreshSessionIDCookie();
 }
 
 function joinLobby(data) {
@@ -274,7 +274,6 @@ function joinLobby(data) {
 		return;
 	}
 	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data}));
-	refreshSessionIDCookie();
 }
 
 function showLobby(data) {
@@ -333,7 +332,6 @@ function showLobby(data) {
 
 function leaveLobby() {
 	ws.send(JSON.stringify({tag: 'leaveLobby'}));
-	refreshSessionIDCookie();
 }
 
 function leftLobby(data) {
@@ -360,7 +358,6 @@ function otherLeftLobby(data) {
 
 function startGame() {
 	ws.send(JSON.stringify({tag: 'startGame'}));
-	refreshSessionIDCookie();
 }
 
 function startedGame(data) {
@@ -382,7 +379,6 @@ function sendCommand() {
 		document.querySelector('#game-console-input').value = '';
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}
-	refreshSessionIDCookie();
 }
 
 function receiveCommand(data) {
@@ -403,7 +399,6 @@ function sendChat() {
 		ws.send(JSON.stringify({tag: 'sendChat', data: data}));
 		document.querySelector('#game-chat-input').value = '';
 	}
-	refreshSessionIDCookie();
 }
 
 function receiveChat(data) {
