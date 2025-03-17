@@ -425,7 +425,9 @@ export function processCommand(data, ws, server) {
 				status = 0;
 			} else {
 				if (command.command.length == 1 || command.command[1].trim() == 'auto') {
-					gameData.hands[myIdx][0].sort();
+					console.log(gameData.hands[myIdx][0].map(e => e + ' ' + GameUtils.card2Str(e)));
+					gameData.hands[myIdx][0].sort((a, b) => {a - b});
+					console.log(gameData.hands[myIdx][0].map(e => e + ' ' + GameUtils.card2Str(e)));
 				} else {
 					let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
 					let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);

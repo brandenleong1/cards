@@ -32,6 +32,11 @@ async function init() {
 		let x = parseInt(this.value, 10);
 		document.querySelector('#game-chat').style.flexGrow = Math.floor((100 * x) / (100 - x));
 	});
+	document.querySelector('#symbolic-cards-checkbox').addEventListener('change', function() {
+		if (gameDataOld.gameState) {
+			drawGUI(gameDataOld);
+		}
+	});
 	document.querySelector('#game-console-input').addEventListener('keypress', function(e) {
 		if (e.key == 'Enter') {
 			e.preventDefault();

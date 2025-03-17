@@ -443,14 +443,17 @@ async function drawGUI(data) { // TODO animation
 	let gameData = data.data.gameData;
 	let server = data.data.serverData;
 
-	if (animatingGUI) {
-		gameDataNew = gameData;
-		return;
-	}
+	let drawCard = document.querySelector('#symbolic-cards-checkbox').checked ? Cards.card2Unicode : Cards.card2Str;
+	let drawCardSpacing = document.querySelector('#symbolic-cards-checkbox').checked ? '' : ' ';
 
-	if (gameDataOld && gameDataOld.gameState != gameData.gameState) {
-		animatingGUI = true;
-	}
+	// if (animatingGUI) {
+	// 	gameDataNew = gameData;
+	// 	return;
+	// }
+
+	// if (gameDataOld && gameDataOld.gameState != gameData.gameState) {
+	// 	animatingGUI = true;
+	// }
 
 	// Clear GUI
 	let leaderboard = document.querySelector('#game-gui-leaderboard');
@@ -596,7 +599,7 @@ async function drawGUI(data) { // TODO animation
 		div2.innerText = i;
 		if (gameData.hands[myIdx][1].indexOf(card) != -1) div2.style.color = 'var(--color_red)';
 		let div3 = document.createElement('div');
-		div3.innerText = Cards.card2Unicode(card);
+		div3.innerText = drawCard(card);
 
 		if (!playableCards.has(card)) div1.classList.add('unplayable');
 
@@ -637,10 +640,11 @@ async function drawGUI(data) { // TODO animation
 			} else if (j == 3){
 				div2.innerText = '🂠' + gameData.hands[i][0].length;
 			} else if (j == 4) {
+				div2.style.fontSize = '1.6em';
 				if (gameData.gameState == 'SHOW_ALL') {
 					div2.innerText = gameData.hands[i][1].filter(e => gameData.stacks[1].filter(e1 => e1[1] == 4).map(e1 => e1[0]).includes(e)).map(e => Cards.card2Unicode(e)).join('');
 				} else if (gameData.gameState.startsWith('PLAY_')) {
-					div2.innerText = gameData.hands[i][1].map(e => Cards.card2Unicode(e)).join('');
+					div2.innerText = gameData.hands[i][1].map(e => drawCard(e)).join(drawCardSpacing);
 				}
 			} else if (j == 5) {
 				div2.style.fontSize = '0.8em';
@@ -649,10 +653,11 @@ async function drawGUI(data) { // TODO animation
 					div2.style.color = gameData.scores[i][1] > 0 ? 'var(--color_green)' : 'var(--color_red)';
 				}
 			} else if (j == 6) {
-				div2.innerText = gameData.hands[i][2].map(e => Cards.card2Unicode(e)).join('');
+				div2.style.fontSize = '1.6em';
+				div2.innerText = gameData.hands[i][2].map(e => drawCard(e)).join(drawCardSpacing);
 			} else if (j == 7) {
-				div2.style.fontSize = '1.5em';
-				div2.innerText = gameData.hands[i][3].map(e => Cards.card2Unicode(e)).join('');
+				div2.style.fontSize = '2.4em';
+				div2.innerText = gameData.hands[i][3].map(e => drawCard(e)).join(drawCardSpacing);
 			}
 			div1.append(div2);
 		}
@@ -664,7 +669,7 @@ async function drawGUI(data) { // TODO animation
 			let div1 = document.createElement('div');
 
 			let div2 = document.createElement('div');
-			div2.innerText = Cards.card2Unicode(e[0]);
+			div2.innerText = drawCard(e[0]);
 			let div3 = document.createElement('div');
 			div3.innerText = '(x' + e[1] + ')';
 
@@ -676,11 +681,12 @@ async function drawGUI(data) { // TODO animation
 
 	for (let e of document.querySelectorAll('.game-gui-server-owner')) e.innerText = server.host;
 
-	if (animatingGUI) {
-		animatingGUI = false;
-		drawGUI({data: {gameData: gameDataNew, serverData: server}});
-	}
+	// if (animatingGUI) {
+	// 	animatingGUI = false;
+	// 	drawGUI({data: {gameData: gameDataNew, serverData: server}});
+	// }
 
+	gameDataOld = data;
 }
 
 function toggleDebug(data) {
