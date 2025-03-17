@@ -179,7 +179,7 @@
 
 #game-console-output *, #game-chat-output * {
 	word-break: break-all;
-	white-space: pre;
+	white-space: pre-wrap;
 	tab-size: calc(4ch + 4px);
 }
 
