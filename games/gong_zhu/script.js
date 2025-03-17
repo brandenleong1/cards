@@ -104,7 +104,7 @@ function receiveSessionID(data) {
 		let div = document.createElement('div');
 		div.classList.add('content-header-2');
 		div.innerHTML = 'Playing as: <span style="color: var(--color_red);">' + data.data.username + '</span>';
-		document.querySelector('#username-div').append(div);
+		document.querySelector('#username').append(div);
 	} else {
 		document.querySelector('#username-input').style.display = null;
 	}
@@ -140,7 +140,7 @@ function receiveUsername(data) {
 		Popup.toastPopup(data.data);
 	} else {
 		document.querySelector('#username-input').style.display = 'none';
-		Utils.clearDiv(document.querySelector('#username-input-div'));
+		Utils.clearDiv(document.querySelector('#username-input'));
 
 		let div = document.createElement('div');
 		div.classList.add('content-header-2');
@@ -297,7 +297,7 @@ function showLobby(data) {
 	document.querySelector('#popup-create-lobby').parentNode.click();
 	document.querySelector('#popup-load-lobby').parentNode.click();
 
-	document.querySelector('#username-div').style.display = 'none';
+	document.querySelector('#username').style.display = 'none';
 	document.querySelector('#lobby-menu').style.display = 'none';
 	document.querySelector('#lobby').style.display = null;
 	document.querySelector('#game').style.display = 'none';
@@ -355,7 +355,7 @@ function leftLobby(data) {
 	getLobbies();
 	handlers.set('lobbyRefresh', setInterval(getLobbies, 2000));
 
-	document.querySelector('#username-div').style.display = null;
+	document.querySelector('#username').style.display = null;
 	document.querySelector('#lobby-menu').style.display = null;
 	document.querySelector('#lobby').style.display = 'none';
 }
