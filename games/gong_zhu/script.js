@@ -96,9 +96,19 @@ function initWebSocket() {
 function receiveSessionID(data) {
 	if (data.status) {
 		username = data.data.username;
+		document.querySelector('#username').style.display = null;
+
+		document.querySelector('#username-input').style.display = 'none';
+		Utils.clearDiv(document.querySelector('#username-input'));
+
+		let div = document.createElement('div');
+		div.classList.add('content-header-2');
+		div.innerHTML = 'Playing as: <span style="color: var(--color_red);">' + data.data.username + '</span>';
+		document.querySelector('#username-div').append(div);
+	} else {
+		document.querySelector('#username-input').style.display = null;
 	}
 	Cookies.setCookie('sessionID', data.data.sessionID, 30 * 60 * 1000);
-	document.querySelector('#username-div').style.display = null;
 
 	handlers.set('sessionIDRefresh', setInterval(function() {
 		refreshSessionIDCookie();
@@ -129,12 +139,15 @@ function receiveUsername(data) {
 	if (!data.status) {
 		Popup.toastPopup(data.data);
 	} else {
-		let parent = document.querySelector('#username-div');
-		Utils.clearDiv(parent);
+		document.querySelector('#username-input').style.display = 'none';
+		Utils.clearDiv(document.querySelector('#username-input-div'));
+
 		let div = document.createElement('div');
 		div.classList.add('content-header-2');
 		div.innerHTML = 'Playing as: <span style="color: var(--color_red);">' + data.data + '</span>';
-		parent.append(div);
+		document.querySelector('#username').append(div);
+
+		document.querySelector('#username').style.display = null;
 		username = data.data;
 
 		getLobbies();
@@ -191,7 +204,6 @@ function updateLobbies(data) {
 	}
 
 	for (let server of data.data) {
-		// console.log(server);
 		let container = document.createElement('div');
 		container.classList.add('lobby-tile', 'content-container-vertical');
 
@@ -361,7 +373,7 @@ function startGame() {
 }
 
 function startedGame(data) {
-	console.log('started');
+	document.querySelector('#username').style.display = 'none';
 	document.querySelector('#title').style.display = 'none';
 	document.querySelector('#lobby').style.display = 'none';
 	document.querySelector('#game').style.display = null;

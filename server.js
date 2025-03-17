@@ -26,6 +26,7 @@ let messageDecoder = {
 		let res = archive.find(ws => ws.sessionID == data.data);
 		// console.log('checkSessionID', res);
 		if (res) {
+			game.gong_zhu.users.set(res.username, ws);
 			ws.username = res.username;
 			ws.sessionID = res.sessionID;
 			let idx = game.gong_zhu.getServerIdx(res.connected);
