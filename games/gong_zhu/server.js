@@ -75,10 +75,13 @@ export function getServerIdx(serverData) {
 	});
 }
 
-export function joinServer(ws, serverData) {
-	let idx = getServerIdx(serverData);
+export function joinServer(ws, server) {
+	let idx = getServerIdx(server);
+
+	console.log(servers[idx]);
 
 	if (idx == -1) return [0, 'Server does not exist'];
+	else if (servers[idx].gameData.maxPlayers == servers[idx].connected.length) return [0, 'Server full'];
 	else {
 		Utils.binaryInsert(servers[idx].connected, ws.username, function(a, b) {
 			return a.localeCompare(b);
@@ -88,8 +91,8 @@ export function joinServer(ws, serverData) {
 	}
 }
 
-export function leaveServer(ws, serverData) {
-	let idx = getServerIdx(serverData);
+export function leaveServer(ws, server) {
+	let idx = getServerIdx(server);
 
 	if (idx == -1) return [0, 'Server does not exist'];
 	else {
@@ -109,8 +112,8 @@ export function leaveServer(ws, serverData) {
 	}
 }
 
-export function updateServerSettings(serverData, settings) {
-	let idx = getServerIdx(serverData);
+export function updateServerSettings(server, settings) {
+	let idx = getServerIdx(server);
 	if (idx == -1) return [0, 'Server does not exist'];
 	else {
 		for (let property in settings) {
@@ -356,7 +359,7 @@ export function processCommand(data, ws, server) {
 	switch (command.command[0].toLowerCase()) {
 		case 'help':
 			if (command.command.length > 1) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				ret.push(['Too many arguments for [' + commandUpper + '] (max 0)', 0]);
 				status = 0;
 				break;
 			}
@@ -368,15 +371,16 @@ export function processCommand(data, ws, server) {
 				str += '\t- unspecified cards retain their order\n';
 				str += '\tSORT\n';
 				str += '\t\talias SORT auto\n';
-				str += '\tSORT [order]\n';
-					str += '\t\te.g. SORT "1 2 7 3 0"\n';
-			str += 'SWAP - swap two cards in your hand\n';
-				str += '\tSWAP [idxA] [idxB]\n';
+				str += '\tSORT [order]...\n';
+					str += '\t\te.g. SORT 1 2 7 3 0\n';
+			str += 'SWAP - swap cards in your hand\n';
+				str += '\t- card at order[0] -> order[1], order[1] -> order[2], etc.';
+				str += '\tSWAP [order]...\n';
 					str += '\t\te.g. SWAP 5 6\n';
 			str += 'PLAY - play card(s)\n';
 				str += '\t- can also be used in the "SHOW" phase to show cards\n';
-				str += '\tPLAY [cards]\n';
-				str += '\t\te.g. PLAY "4 1"\n';
+				str += '\tPLAY [cards]...\n';
+				str += '\t\te.g. PLAY 4 1\n';
 			str += 'PASS - pass a play (in the "SHOW" phase)\n';
 			str += 'CLEAR - clears the console\n';
 				str += '\talias CLR\n';
@@ -400,7 +404,7 @@ export function processCommand(data, ws, server) {
 		case 'deal':
 			if (ws.username == server.host) {
 				if (command.command.length > 1) {
-					ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+					ret.push(['Too many arguments for [' + commandUpper + '] (max 0)', 0]);
 					status = 0;
 					break;
 				}
@@ -420,34 +424,60 @@ export function processCommand(data, ws, server) {
 			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
 				status = 0;
-			} else if (command.command.length > 2) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need max 1)', 0]);
-				status = 0;
 			} else {
 				if (command.command.length == 1 || command.command[1].trim() == 'auto') {
-					console.log(gameData.hands[myIdx][0].map(e => e + ' ' + GameUtils.card2Str(e)));
-					gameData.hands[myIdx][0].sort((a, b) => {return a - b;});
-					console.log(gameData.hands[myIdx][0].map(e => e + ' ' + GameUtils.card2Str(e)));
+					gameData.hands[myIdx][0].sort((a, b) => a - b);
 				} else {
-					let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-					let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+					let args = command.command.slice(1).map(e => parseInt(e, 10));
+					let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+					let duplicateIdx = args.findIndex((e, i) => args.indexOf(e) != i);
+					// let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
+					// let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 					if (invalidArgIdx != -1) {
-						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
+						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
 						status = 0;
 						break;
-					} else if ((new Set(arg1)).size != arg1.length) {
-						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (duplicate subarguments)', 0]);
+					} else if (duplicateIdx != -1) {
+						ret.push(['Invalid argument at index [' + (duplicateIdx + 1) + '] for [' + commandUpper + '] (duplicate arguments)', 0]);
 						status = 0;
 						break;
 					}
 
-					gameData.hands[myIdx][0] = Utils.sortArray(gameData.hands[myIdx][0], arg1);
+					gameData.hands[myIdx][0] = Utils.sortArray(gameData.hands[myIdx][0], args);
 				}
 
 				Utils.broadcastGameState(ws, server, obfuscateGameData);
 			}
 			break;
-		case 'swap':	// TODO swap
+		case 'swap':
+			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
+				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
+				status = 0;
+			} else if (command.command.length < 2) {
+				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
+				status = 0;
+			} else {
+				let args = command.command.slice(1).map(e => parseInt(e, 10));
+				let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+				let duplicateIdx = args.findIndex((e, i) => args.indexOf(e) != i);
+				if (invalidArgIdx != -1) {
+					ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
+					status = 0;
+					break;
+				} else if (duplicateIdx != -1) {
+					ret.push(['Invalid argument at index [' + (duplicateIdx + 1) + '] for [' + commandUpper + '] (duplicate arguments)', 0]);
+					status = 0;
+					break;
+				}
+
+				let swap = (arr, i, j) => {[arr[i], arr[j]] = [arr[j], arr[i]];};
+				swap(gameData.hands[myIdx][0], args[0], args[args.length - 1]);
+				for (let i = args.length - 1; i >= 2; i--) {
+					swap(gameData.hands[myIdx][0], args[i], args[i - 1]);
+				}
+
+				Utils.broadcastGameState(ws, server, obfuscateGameData);
+			}
 			break;
 		case 'play':
 			if (
@@ -460,27 +490,26 @@ export function processCommand(data, ws, server) {
 			} else if (command.command.length < 2) {
 				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
 				status = 0;
-			} else if (command.command.length > 2) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need 1)', 0]);
-				status = 0;
 			} else {
-				let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-				let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+				let args = command.command.slice(1).map(e => parseInt(e, 10));
+				let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
+				// let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
+				// let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 				if (invalidArgIdx != -1) {
-					ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
+					ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
 					status = 0;
 					break;
 				}
 
 				if (gameData.gameState == 'SHOW_3' || gameData.gameState == 'SHOW_ALL') {
-					let invalidArgIdx = arg1.findIndex(e => [11, 13, 36, 48].indexOf(gameData.hands[myIdx][0][e]) == -1 || gameData.stacks[1].findIndex(e1 => e1 == gameData.hands[myIdx][0][e]) != -1);
+					let invalidArgIdx = args.findIndex(e => [11, 13, 36, 48].indexOf(gameData.hands[myIdx][0][e]) == -1 || gameData.stacks[1].findIndex(e1 => e1 == gameData.hands[myIdx][0][e]) != -1);
 					if (invalidArgIdx != -1) {
-						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
+						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
 						status = 0;
 						break;
 					}
 
-					let cards = arg1.map(e => gameData.hands[myIdx][0][e]);
+					let cards = args.map(e => gameData.hands[myIdx][0][e]);
 					let val = gameData.gameState == 'SHOW_3' ? 4 : 2;
 					for (let e of cards) {
 						if (gameData.stacks[1].indexOf(e) == -1) {
@@ -490,8 +519,8 @@ export function processCommand(data, ws, server) {
 						}
 					}
 				} else {
-					if (arg1.length != 1) {
-						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (incompatible number of subarguments; need 1, got ' + arg1.length + ')', 0]);
+					if (args.length != 1) {
+						ret.push(['Too many arguments for [' + commandUpper + '] (max 1)', 0]);
 						status = 0;
 						break;
 					}
@@ -511,18 +540,18 @@ export function processCommand(data, ws, server) {
 						}
 					}
 
-					let invalidArgIdx = arg1.findIndex(e => !playableCards.has(gameData.hands[myIdx][0][e]));
+					let invalidArgIdx = args.findIndex(e => !playableCards.has(gameData.hands[myIdx][0][e]));
 					if (invalidArgIdx != -1) {
-						ret.push(['Invalid argument at index 1 for [' + commandUpper + '] (subargument "' + arg1[invalidArgIdx] + '")', 0]);
+						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
 						status = 0;
 						break;
 					}
 
-					ret.push(['Player [' +  gameData.turnOrder[myIdx] + '] played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][arg1[0]]) + ']', 1]);
+					ret.push(['Player [' +  gameData.turnOrder[myIdx] + '] played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][args[0]]) + ']', 1]);
 
-					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][arg1[0]]);
+					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][args[0]]);
 					if (shownIdx != -1) gameData.hands[myIdx][1].splice(shownIdx, 1);
-					gameData.hands[myIdx][3].push(...gameData.hands[myIdx][0].splice(arg1[0], 1));
+					gameData.hands[myIdx][3].push(...gameData.hands[myIdx][0].splice(args[0], 1));
 
 					ret.push(...gameNSL(server));
 				}

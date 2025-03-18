@@ -236,7 +236,10 @@
 		<!-- <div class="content-container-horizontal" id="game" style="height: calc(100vh - 40px);"> -->
 			<div id="game-notes">
 				<div class="content-container-vertical" id="game-notes-container">
-					<div class="content-header-2">Notes</div>
+					<div style="display: flex; align-items: center; justify-content: space-between;">
+						<div class="content-header-2">Notes</div>
+						<div class="button-positive-2" id="clear-notes-btn">Clear</div>
+					</div>
 					<div id="game-notes-cards"></div>
 					<textarea placeholder="Write notes here..."></textarea>
 					<div id="game-notes-btn"><span>&#x27E8</span></div>
@@ -306,7 +309,7 @@
 		</div>
 		<div class="popup" id="popup-settings">
 			<div class="content-header">Settings</div>
-			<div style="display: grid; grid-template-columns: repeat(2, auto);">
+			<div style="display: grid;">
 
 				<div class="content-text" style="grid-column: 1 / 2;">
 					<span class="button-positive" id="theme-btn" style="padding: 0;">Change Theme:</span>
@@ -324,6 +327,9 @@
 
 				<div class="content-text" style="grid-column: 1 / 2;">Symbolic Cards:</div>
 				<input type="checkbox" id="symbolic-cards-checkbox" style="width: 24px; margin: 3px; grid-column: 2 / 3;" />
+
+				<div class="content-text" style="grid-column: 1 / 2;">GUI Size:</div>
+				<input type="range" id="gui-size-slider" min="0.5" max="2" value="1" step="0.05" style="grid-column: 2 / 3;" />
 
 			</div>
 		</div>

@@ -33,10 +33,14 @@ async function init() {
 		document.querySelector('#game-chat').style.flexGrow = Math.floor((100 * x) / (100 - x));
 	});
 	document.querySelector('#symbolic-cards-checkbox').addEventListener('change', function() {
-		if (gameDataOld.gameData.gameState) {
+		if (gameDataOld.data.gameData.gameState) {
 			drawGUI(gameDataOld);
 		}
 	});
+	document.querySelector('#gui-size-slider').addEventListener('input', function() {
+		document.querySelector('#game-gui').style.fontSize = this.value + 'em';
+	});
+
 	document.querySelector('#game-console-input').addEventListener('keypress', function(e) {
 		if (e.key == 'Enter') {
 			e.preventDefault();
@@ -52,6 +56,10 @@ async function init() {
 
 	document.querySelector('#game-notes-btn').addEventListener('click', function() {
 		document.querySelector('#game-notes').classList.toggle('selected');
+	});
+	document.querySelector('#clear-notes-btn').addEventListener('click', function() {
+		for (let e of document.querySelectorAll('#game-notes-cards input')) e.value = null;
+		document.querySelector('#game-notes-container textarea').value = null;
 	});
 
 	for (let i = 0; i < 52; i++) {
@@ -69,7 +77,7 @@ async function init() {
 		div1.innerText = card;
 
 		let div2 = document.createElement('input');
-		div2.type = 'text';
+		div2.type = 'number';
 		div2.placeholder = '0';
 
 		div.append(div1, div2);

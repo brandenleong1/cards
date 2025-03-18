@@ -209,7 +209,7 @@
 #game-notes-container {
 	width: 100%;
 	height: 100%;
-	padding-right: 20px;
+	padding: 5px 15px 5px 5px;
 	overflow-y: auto;
 }
 
@@ -232,7 +232,7 @@
 	width: min-content;
 }
 
-#game-notes-cards .card input[type="text"] {
+#game-notes-cards .card input[type="number"] {
 	min-width: 50px;
 	background-color: var(--color_input);
 }
