@@ -37,17 +37,21 @@
 	justify-self: center;
 }
 
-#game-gui-hands > div :nth-child(5).non-empty,
-#game-gui-hands > div :nth-child(7).non-empty,
-#game-gui-hands > div :nth-child(8).non-empty {
+#game-gui-hands > div > * {
 	line-height: 1;
 	padding: 2px;
 	min-height: calc(100% - 4px);
-	background-color: rgba(255, 255, 255, 0.2);
 	border-radius: 5px;
 	display: flex;
 	align-items:center;
 	width: fit-content;
+}
+
+#game-gui-hands > div :nth-child(5).not-empty,
+#game-gui-hands > div :nth-child(7).not-empty,
+#game-gui-hands > div :nth-child(8).not-empty {
+	background-color: rgba(255, 255, 255, 0.2);
+	border-radius: 5px;
 }
 
 #game-gui-shown-cards {
