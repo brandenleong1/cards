@@ -301,10 +301,59 @@
 		</div>
 
 		<div class="popup" id="popup-help">
-			<div class="content-header">Help</div>
+			<div class="content-header">How To Play — Gong Zhu (Pig)</div>
 			<div class="content-container-vertical">
-				<div class="content-text">Text styled like <span style="color: var(--color_btn);">this</span> are buttons. Use them to navigate on the site.</div>
-				<!-- <div class="content-text">Text styled like <span style="color: var(--color_link);">this</span> are links. They open in new tabs.</div> -->
+				<div class="content-header-2">Objective</div>
+				<div class="content-text">
+					The objective of the game is to avoid being the first player whose score falls below the set threshold. The player who wins each trick takes the cards played during that trick, along with their associated point values (see Point Values).<br>
+					All players start with zero points. Between rounds, points accumulate until at least one player has a score lower than the threshold, who lose the game.
+				</div>
+
+				<div class="content-header-2">The Cards</div>
+				<div class="content-text">
+					The game is played with one standard 52-card deck.<br>
+					The cards in each suit rank from high to low: A K Q J 10 9 8 7 6 5 4 3 2.
+				</div>
+
+				<div class="content-header-2">Order of Play</div>
+				<div class="content-text">
+					Each player will be assigned a fixed position arranged in a circle, and turns are taken in an anticlockwise manner.
+				</div>
+
+				<div class="content-header-2">Point Values</div>
+				<div class="content-text">
+					The J♦ (goat) is worth +100 points.<br>
+					The Q♠ (pig) is worth -100 points.<br>
+					The 10♣ (transformer) counts as zero points, but doubles a player's points collected in a round. If at the end of a round, a player has collected the 10♣ and no other point cards, it is worth +50 points.<br>
+					The Hearts (bloods) are worth -200 points in total:<br>
+						<span class="indent">A♥ -50 points;</span><br>
+						<span class="indent">K♥ -40 points;</span><br>
+						<span class="indent">Q♥ -30 points;</span><br>
+						<span class="indent">J♥ -20 points;</span><br>
+						<span class="indent">10♥ through 5♥ are worth -10 points each;</span><br>
+						<span class="indent">4♥ through 2♥ are worth 0 points.</span><br>
+					All other cards are worth 0 points and do not play a part in scoring.<br>
+					<br>
+					If a player has collected all of the hearts, then the values of the hearts turn from negative to positive.<br>
+					If a player has collected all of the hearts and the Q♠, then the values of the hearts and the Q♠ turn from negative to positive.<br>
+						<span class="indent">If the setting "Zhu Yang Man Juan" is enabled, the player must collect both the J♦ and Q♠ for the Q♠ to turn positive.</span>
+				</div>
+
+				<div class="content-header-2">Exposure</div>
+				<div class="content-text">
+					A player may expose the J♦, Q♠, 10♣ and/or A♥ before each round begins. An exposed card may not be played the first time its suit is led, including the lead itself, unless it is a singleton.<br>
+					Exposing a card doubles its effect and associated point values. Exposing the A♥ applies the multiplier to all of the hearts.<br>
+						<span class="indent">If the setting "Expose 3" is enabled, there are two stages of exposure. In the first stage, only three cards are dealt, and exposing during this stage yields a 4x multipler. The rest of the cards are dealt for the second stage, which follows the above rule.</span>
+				</div>
+
+				<div class="content-header-2">Play</div>
+				<div class="content-text">
+					In each trick, the suit is determined by the leading card. The winner of the previous trick plays the first card in the next, and in the first trick, the player with the 2♠ leads.<br>
+					All subsequent players in the order determined (see Order of Play) each play a card:<br>
+						<span class="indent">If the player has a card of the leading suit, they must play a card of this suit, with restrictions applied to exposed cards.</span><br>
+						<span class="indent">If the player does not have a card of the leading suit, they may play any card of their choosing.</span><br>
+					The player who played the highest-ranking card of the leading suit wins the trick and collects all played cards (cards with zero point value can be discarded), then starts the next trick.<br>
+				</div>
 			</div>
 		</div>
 		<div class="popup" id="popup-settings">

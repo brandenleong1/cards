@@ -273,3 +273,7 @@
 .debug:not(.shown) {
 	display: none;
 }
+
+#popup-help span.indent {
+	padding-left: 20px;
+}

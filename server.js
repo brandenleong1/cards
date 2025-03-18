@@ -167,13 +167,13 @@ wss.on('listening', function() {
 			if (ws.username) game.gong_zhu.removeUser(ws.username);
 			if (ws.connected) {
 				game.gong_zhu.leaveServer(ws, ws.connected);
-				if (this.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
-					this.connected,
-					{tag: 'joinedLobby', status: 1, data: this.connected}
+				if (ws.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+					ws.connected,
+					{tag: 'joinedLobby', status: 1, data: ws.connected}
 				);
 				else Utils.broadcastToConnected(game.gong_zhu.users, 
-					this.connected,
-					{tag: 'otherLeftLobby', status: 1, data: this.connected}
+					ws.connected,
+					{tag: 'otherLeftLobby', status: 1, data: ws.connected}
 				)
 			}
 			for (let ws of wss.clients) {

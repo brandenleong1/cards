@@ -431,8 +431,6 @@ export function processCommand(data, ws, server) {
 					let args = command.command.slice(1).map(e => parseInt(e, 10));
 					let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 					let duplicateIdx = args.findIndex((e, i) => args.indexOf(e) != i);
-					// let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-					// let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 					if (invalidArgIdx != -1) {
 						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
 						status = 0;
@@ -493,8 +491,6 @@ export function processCommand(data, ws, server) {
 			} else {
 				let args = command.command.slice(1).map(e => parseInt(e, 10));
 				let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
-				// let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));
-				// let invalidArgIdx = arg1.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 				if (invalidArgIdx != -1) {
 					ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
 					status = 0;
