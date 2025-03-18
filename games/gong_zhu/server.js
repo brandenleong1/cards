@@ -426,7 +426,7 @@ export function processCommand(data, ws, server) {
 			} else {
 				if (command.command.length == 1 || command.command[1].trim() == 'auto') {
 					console.log(gameData.hands[myIdx][0].map(e => e + ' ' + GameUtils.card2Str(e)));
-					gameData.hands[myIdx][0].sort((a, b) => {a - b});
+					gameData.hands[myIdx][0].sort((a, b) => {return a - b;});
 					console.log(gameData.hands[myIdx][0].map(e => e + ' ' + GameUtils.card2Str(e)));
 				} else {
 					let arg1 = command.command[1].trim().split(/\s+/g).map(e => parseInt(e, 10));

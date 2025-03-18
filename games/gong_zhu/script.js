@@ -443,8 +443,8 @@ async function drawGUI(data) { // TODO animation
 	let gameData = data.data.gameData;
 	let server = data.data.serverData;
 
-	let drawCard = document.querySelector('#symbolic-cards-checkbox').checked ? Cards.card2Unicode : Cards.card2Str;
-	let drawCardSpacing = document.querySelector('#symbolic-cards-checkbox').checked ? '' : ' ';
+	let drawCard = document.querySelector('#symbolic-cards-checkbox').checked ? Cards.card2Str : Cards.card2Unicode;
+	let drawCardSpacing = document.querySelector('#symbolic-cards-checkbox').checked ? ' ' : '';
 
 	// if (animatingGUI) {
 	// 	gameDataNew = gameData;
@@ -659,6 +659,8 @@ async function drawGUI(data) { // TODO animation
 				div2.style.fontSize = '2.4em';
 				div2.innerText = gameData.hands[i][3].map(e => drawCard(e)).join(drawCardSpacing);
 			}
+
+			if (div2.innerText.length) div2.classList.add('not-empty');
 			div1.append(div2);
 		}
 		hands.append(div1);

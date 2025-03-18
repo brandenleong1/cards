@@ -33,7 +33,7 @@ async function init() {
 		document.querySelector('#game-chat').style.flexGrow = Math.floor((100 * x) / (100 - x));
 	});
 	document.querySelector('#symbolic-cards-checkbox').addEventListener('change', function() {
-		if (gameDataOld.gameState) {
+		if (gameDataOld.gameData.gameState) {
 			drawGUI(gameDataOld);
 		}
 	});

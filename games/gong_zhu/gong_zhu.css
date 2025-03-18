@@ -37,9 +37,9 @@
 	justify-self: center;
 }
 
-#game-gui-hands > div :nth-child(5),
-#game-gui-hands > div :nth-child(7),
-#game-gui-hands > div :nth-child(8) {
+#game-gui-hands > div :nth-child(5).non-empty,
+#game-gui-hands > div :nth-child(7).non-empty,
+#game-gui-hands > div :nth-child(8).non-empty {
 	line-height: 1;
 	padding: 2px;
 	min-height: calc(100% - 4px);
@@ -47,6 +47,7 @@
 	border-radius: 5px;
 	display: flex;
 	align-items:center;
+	width: fit-content;
 }
 
 #game-gui-shown-cards {
