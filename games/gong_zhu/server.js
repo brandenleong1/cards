@@ -279,7 +279,10 @@ function gameOFL(server) {
 			important.forEach(e => gameData.hands[winnerIdx][2].push(e));
 			gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
 
-			ret.push(['Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']', 1]);
+			ret.push({
+				msg: 'Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']',
+				toAll: true
+			});
 
 			gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
 
@@ -291,7 +294,10 @@ function gameOFL(server) {
 				}
 			});
 		}
-		ret.push(['Started Trick ' + (Math.round(gameData.stacks[0].length / 4) + 1) + '; Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] leads...', 1]);
+		ret.push({
+			msg: 'Started Trick ' + (Math.round(gameData.stacks[0].length / 4) + 1) + '; Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] leads...',
+			toAll: true
+		});
 	} else if (state == 'PLAY_1') {
 
 	} else if (state == 'PLAY_2') {
@@ -321,7 +327,10 @@ function gameOFL(server) {
 		important.forEach(e => gameData.hands[winnerIdx][2].push(e));
 		gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
 
-		ret.push(['Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']', 1]);
+		ret.push({
+			msg: 'Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']',
+			toAll: true
+		});
 
 		gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
 
@@ -335,10 +344,20 @@ function gameOFL(server) {
 
 		gameData.scores.forEach((e, i) => {
 			e[0] += e[1];
-			ret.push(['Player [' + gameData.turnOrder[i] + '] receives ' + (e[1] > 0 ? '+' + e[1] : e[1]), 1]);
+			ret.push({
+				msg: 'Player [' + gameData.turnOrder[i] + '] receives ' + (e[1] > 0 ? '+' + e[1] : e[1]),
+				toAll: true
+			});
 		});
 	} else if (state == 'LEADERBOARD') {
-
+		if (server.gameData.scores.some(e => e[0] <= server.gameData.settings.losingThreshold)) {
+			for (let i = 0; i < server.gameData.turnOrder.length; i++) {
+				ret.push({
+					msg: 'Player [' + gameData.turnOrder[i] + '] ' + (server.gameData.scores[i][0] <= server.gameData.settings.losingThreshold ? 'loses' : 'survives') + ' ↦ ' + server.gameData.scores[i][0] + ' pts',
+					toAll: true
+				});
+			}
+		}
 	}
 
 	Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
@@ -359,7 +378,10 @@ export function processCommand(data, ws, server) {
 	switch (command.command[0].toLowerCase()) {
 		case 'help':
 			if (command.command.length > 1) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (max 0)', 0]);
+				ret.push({
+					msg: 'Too many arguments for [' + commandUpper + '] (max 0)',
+					toAll: false
+				});
 				status = 0;
 				break;
 			}
@@ -385,11 +407,17 @@ export function processCommand(data, ws, server) {
 			str += 'CLEAR - clears the console\n';
 				str += '\talias CLR\n';
 			str += 'DEBUG - show debug elements\n';
-			ret.push([str.slice(0, -1), 0]);
+			ret.push({
+				msg: str.slice(0, -1),
+				toAll: false
+			});
 			break;
 		case 'exit':
 			if (command.command.length > 1) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				ret.push({
+					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
+					toAll: false
+				});
 				status = 0;
 			} else {
 				server.gameData.gameState = '';
@@ -404,25 +432,40 @@ export function processCommand(data, ws, server) {
 		case 'deal':
 			if (ws.username == server.host) {
 				if (command.command.length > 1) {
-					ret.push(['Too many arguments for [' + commandUpper + '] (max 0)', 0]);
+					ret.push({
+						msg: 'Too many arguments for [' + commandUpper + '] (max 0)',
+						toAll: false
+					});
 					status = 0;
 					break;
 				}
 				if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 					ret.push(...gameNSL(server));
-					ret.push(['Started Round ' + gameData.round, 1]);
+					ret.push({
+						msg: 'Started Round ' + gameData.round,
+						toAll: true
+					});
 				} else {
-					ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
+					ret.push({
+						msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
+						toAll: false
+					});
 					status = 0;
 				}
 			} else {
-				ret.push(['Unknown command [' + command.command[0] + ']', 0]);
+				ret.push({
+					msg: 'Unknown command [' + command.command[0] + ']',
+					toAll: false
+				});
 				status = 0;
 			}
 			break;
 		case 'sort':
 			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
+					toAll: false
+				});
 				status = 0;
 			} else {
 				if (command.command.length == 1 || command.command[1].trim() == 'auto') {
@@ -432,11 +475,17 @@ export function processCommand(data, ws, server) {
 					let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 					let duplicateIdx = args.findIndex((e, i) => args.indexOf(e) != i);
 					if (invalidArgIdx != -1) {
-						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
+						ret.push({
+							msg: 'Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")',
+							toAll: false
+						});
 						status = 0;
 						break;
 					} else if (duplicateIdx != -1) {
-						ret.push(['Invalid argument at index [' + (duplicateIdx + 1) + '] for [' + commandUpper + '] (duplicate arguments)', 0]);
+						ret.push({
+							msg: 'Invalid argument at index [' + (duplicateIdx + 1) + '] for [' + commandUpper + '] (duplicate arguments)',
+							toAll: false
+						});
 						status = 0;
 						break;
 					}
@@ -449,21 +498,33 @@ export function processCommand(data, ws, server) {
 			break;
 		case 'swap':
 			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
+					toAll: false
+				});
 				status = 0;
 			} else if (command.command.length < 2) {
-				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
+				ret.push({
+					msg: 'Insufficient arguments for [' + commandUpper + '] (need 1)',
+					toAll: false
+				});
 				status = 0;
 			} else {
 				let args = command.command.slice(1).map(e => parseInt(e, 10));
 				let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 				let duplicateIdx = args.findIndex((e, i) => args.indexOf(e) != i);
 				if (invalidArgIdx != -1) {
-					ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
+					ret.push({
+						msg: 'Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")',
+						toAll: false
+					});
 					status = 0;
 					break;
 				} else if (duplicateIdx != -1) {
-					ret.push(['Invalid argument at index [' + (duplicateIdx + 1) + '] for [' + commandUpper + '] (duplicate arguments)', 0]);
+					ret.push({
+						msg: 'Invalid argument at index [' + (duplicateIdx + 1) + '] for [' + commandUpper + '] (duplicate arguments)',
+						toAll: false
+					});
 					status = 0;
 					break;
 				}
@@ -483,16 +544,25 @@ export function processCommand(data, ws, server) {
 				gameData.gameState != 'SHOW_ALL' &&
 				gameData.gameState != ('PLAY_' + relativeIdx)
 			) {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
+					toAll: false
+				});
 				status = 0;
 			} else if (command.command.length < 2) {
-				ret.push(['Insufficient arguments for [' + commandUpper + '] (need 1)', 0]);
+				ret.push({
+					msg: 'Insufficient arguments for [' + commandUpper + '] (need 1)',
+					toAll: false
+				});
 				status = 0;
 			} else {
 				let args = command.command.slice(1).map(e => parseInt(e, 10));
 				let invalidArgIdx = args.findIndex(e => isNaN(e) || e < 0 || e >= gameData.hands[myIdx][0].length);
 				if (invalidArgIdx != -1) {
-					ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
+					ret.push({
+						msg: 'Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")',
+						toAll: false
+					});
 					status = 0;
 					break;
 				}
@@ -500,7 +570,10 @@ export function processCommand(data, ws, server) {
 				if (gameData.gameState == 'SHOW_3' || gameData.gameState == 'SHOW_ALL') {
 					let invalidArgIdx = args.findIndex(e => [11, 13, 36, 48].indexOf(gameData.hands[myIdx][0][e]) == -1 || gameData.stacks[1].findIndex(e1 => e1 == gameData.hands[myIdx][0][e]) != -1);
 					if (invalidArgIdx != -1) {
-						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
+						ret.push({
+							msg: 'Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")',
+							toAll: false
+						});
 						status = 0;
 						break;
 					}
@@ -516,7 +589,10 @@ export function processCommand(data, ws, server) {
 					}
 				} else {
 					if (args.length != 1) {
-						ret.push(['Too many arguments for [' + commandUpper + '] (max 1)', 0]);
+						ret.push({
+							msg: 'Too many arguments for [' + commandUpper + '] (max 1)',
+							toAll: false
+						});
 						status = 0;
 						break;
 					}
@@ -538,12 +614,18 @@ export function processCommand(data, ws, server) {
 
 					let invalidArgIdx = args.findIndex(e => !playableCards.has(gameData.hands[myIdx][0][e]));
 					if (invalidArgIdx != -1) {
-						ret.push(['Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")', 0]);
+						ret.push({
+							msg: 'Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")',
+							toAll: false
+						});
 						status = 0;
 						break;
 					}
 
-					ret.push(['Player [' +  gameData.turnOrder[myIdx] + '] played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][args[0]]) + ']', 1]);
+					ret.push({
+						msg: 'Player [' +  gameData.turnOrder[myIdx] + '] played card [' + GameUtils.card2Str(gameData.hands[myIdx][0][args[0]]) + ']',
+						toAll: true
+					});
 
 					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][args[0]]);
 					if (shownIdx != -1) gameData.hands[myIdx][1].splice(shownIdx, 1);
@@ -557,13 +639,19 @@ export function processCommand(data, ws, server) {
 			break;
 		case 'pass':
 			if (command.command.length > 1) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				ret.push({
+					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
+					toAll: false
+				});
 				status = 0;
 			} else if (
 				gameData.gameState != 'SHOW_3' &&
 				gameData.gameState != 'SHOW_ALL'
 			) {
-				ret.push(['Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']', 0]);
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
+					toAll: false
+				});
 				status = 0;
 			} else {
 				gameData.needToAct[myIdx] = 0;
@@ -577,7 +665,10 @@ export function processCommand(data, ws, server) {
 		case 'clear':
 		case 'clr':
 			if (command.command.length > 1) {
-				ret.push(['Too many arguments for [' + commandUpper + '] (need 0)', 0]);
+				ret.push({
+					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
+					toAll: false
+				});
 				status = 0;
 			} else {
 				ws.send(JSON.stringify({tag: 'clearConsole'}));
@@ -587,7 +678,10 @@ export function processCommand(data, ws, server) {
 			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret}));
 			break;
 		default:
-			ret.push(['Unknown command [' + commandUpper + ']', 0]);
+			ret.push({
+				msg: 'Unknown command [' + commandUpper + ']',
+				toAll: false
+			});
 			status = 0;
 	}
 

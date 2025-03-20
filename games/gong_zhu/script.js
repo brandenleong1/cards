@@ -494,7 +494,7 @@ async function drawGUI(data) { // TODO animation
 
 	let absMaxScore = Math.abs(gameData.scores[0][0]);
 	for (let i of gameData.scores) {
-		if (Math.abs(i[0]) > absMaxScore) absMaxScore = Math.abs(i);
+		if (Math.abs(i[0]) > absMaxScore) absMaxScore = Math.abs(i[0]);
 	}
 
 	let myIdx;

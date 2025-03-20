@@ -139,8 +139,8 @@ let messageDecoder = {
 
 		let res = game.gong_zhu.processCommand(data.data, ws, server);
 		let resToAll = structuredClone(res);
-		resToAll.data = res.data.filter(e => e[1] == 1).map(e => e[0]);
-		res.data = res.data.map(e => e[0]);
+		resToAll.data = res.data.filter(e => e.toAll).map(e => e.msg);
+		res.data = res.data.map(e => e.msg);
 
 		ws.send(JSON.stringify(res));
 		Utils.broadcastToConnected(game.gong_zhu.users, server, resToAll, ws.username);
@@ -167,7 +167,7 @@ wss.on('listening', function() {
 			if (ws.username) game.gong_zhu.removeUser(ws.username);
 			if (ws.connected) {
 				game.gong_zhu.leaveServer(ws, ws.connected);
-				if (ws.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+				if (ws.connected.gameData && ws.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
 					ws.connected,
 					{tag: 'joinedLobby', status: 1, data: ws.connected}
 				);
