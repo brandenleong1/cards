@@ -556,7 +556,9 @@ async function drawGUI(data) { // TODO animation
 		case 'PLAY_1':
 			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length]) {
 				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-				if (filtered.length) {
+				if (filtered.length == 1) {
+					filtered.forEach(e => playableCards.add(e));
+				} else if (filtered.length) {
 					filtered.forEach(e => {
 						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
 					});
@@ -568,7 +570,9 @@ async function drawGUI(data) { // TODO animation
 		case 'PLAY_2':
 			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length]) {
 				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-				if (filtered.length) {
+				if (filtered.length == 1) {
+					filtered.forEach(e => playableCards.add(e));
+				} else if (filtered.length) {
 					filtered.forEach(e => {
 						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
 					});
@@ -580,7 +584,9 @@ async function drawGUI(data) { // TODO animation
 		case 'PLAY_3':
 			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length]) {
 				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-				if (filtered.length) {
+				if (filtered.length == 1) {
+					filtered.forEach(e => playableCards.add(e));
+				} else if (filtered.length) {
 					filtered.forEach(e => {
 						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
 					});

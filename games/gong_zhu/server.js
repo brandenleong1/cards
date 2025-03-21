@@ -603,7 +603,9 @@ export function processCommand(data, ws, server) {
 						gameData.hands[myIdx][1].filter(e => GameUtils.filterBySuit(e, gameData.hands[myIdx][0]).length == 1).forEach(e => playableCards.add(e));
 					} else {
 						let filtered = GameUtils.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-						if (filtered.length) {
+						if (filtered.length == 1) {
+							filtered.forEach(e => playableCards.add(e));
+						} else if (filtered.length) {
 							filtered.forEach(e => {
 								if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
 							});
