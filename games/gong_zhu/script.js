@@ -38,8 +38,10 @@ function initWebSocket() {
 
 		ws.addEventListener('open', function(e) {
 			if (Cookies.getCookie('sessionID')) {
+				console.log('Checking Session ID', Cookies.getCookie('sessionID'));
 				ws.send(JSON.stringify({tag: 'checkSessionID', data: Cookies.getCookie('sessionID')}));
 			} else {
+				console.log('Requesting new Session ID');
 				ws.send(JSON.stringify({tag: 'requestSessionID'}));
 			}
 		});
@@ -88,6 +90,7 @@ function initWebSocket() {
 			div.innerText = 'WebSocket connection error, try again another time.';
 			document.body.append(div);
 
+			ws.close();
 			setTimeout(location.reload, 1000);
 		});
 	} catch (e) {}
@@ -109,6 +112,7 @@ function receiveSessionID(data) {
 		document.querySelector('#username-input').style.display = null;
 	}
 	Cookies.setCookie('sessionID', data.data.sessionID, 30 * 60 * 1000);
+	console.log('Session ID', Cookies.getCookie('sessionID'));
 
 	handlers.set('sessionIDRefresh', setInterval(function() {
 		refreshSessionIDCookie();
@@ -260,8 +264,6 @@ function updateLobbies(data) {
 			};
 		};
 	}
-
-	// TODO update lobbies onscreen
 }
 
 function createLobby() {

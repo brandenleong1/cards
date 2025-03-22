@@ -21,10 +21,8 @@ let wssClientsArchive = new Map();	// WS Info => Disconnect Time
 
 let messageDecoder = {
 	'checkSessionID': (ws, data) => {
-		// console.log('test', Array.from(wssClientsArchive.keys()))
 		let archive = Array.from(wssClientsArchive.keys()).map(e => JSON.parse(e));
 		let res = archive.find(ws => ws.sessionID == data.data);
-		// console.log('checkSessionID', res);
 		if (res) {
 			game.gong_zhu.users.set(res.username, ws);
 			ws.username = res.username;
@@ -130,7 +128,6 @@ let messageDecoder = {
 
 		game.gong_zhu.initGame(server);
 		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
-		// Utils.broadcastGameStateToConnected(game.gong_zhu.users, server, game.gong_zhu.obfuscateGameData);
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -144,7 +141,6 @@ let messageDecoder = {
 
 		ws.send(JSON.stringify(res));
 		Utils.broadcastToConnected(game.gong_zhu.users, server, resToAll, ws.username);
-		// console.log(JSON.stringify(game.gong_zhu.servers[idx]));
 	},
 	'sendChat': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -160,21 +156,23 @@ let messageDecoder = {
 
 wss.on('listening', function() {
 	setInterval(function() {
-		let purged = Utils.purgeArchive(wssClientsArchive);
+		let purged = Utils.purgeArchive(wssClientsArchive, 1 * 60 * 1000); // UPDATE 3 minute timeout
 
 		purged.forEach(e => {
 			let ws = JSON.parse(e);
 			if (ws.username) game.gong_zhu.removeUser(ws.username);
 			if (ws.connected) {
-				game.gong_zhu.leaveServer(ws, ws.connected);
-				if (ws.connected.gameData && ws.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
-					ws.connected,
-					{tag: 'joinedLobby', status: 1, data: ws.connected}
-				);
-				else Utils.broadcastToConnected(game.gong_zhu.users, 
-					ws.connected,
-					{tag: 'otherLeftLobby', status: 1, data: ws.connected}
-				)
+				let [status, server] = game.gong_zhu.leaveServer(ws, ws.connected);
+				if (status && server) {
+					if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+						server,
+						{tag: 'joinedLobby', status: 1, data: server}
+					);
+					else Utils.broadcastToConnected(game.gong_zhu.users, 
+						server,
+						{tag: 'otherLeftLobby', status: 1, data: server}
+					)
+				}
 			}
 			for (let ws of wss.clients) {
 				ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
@@ -237,24 +235,6 @@ wss.on('connection', function(ws, req) {
 		if (this.username && this.connected) {
 			wssClientsArchive.set(JSON.stringify(oldWs), Date.now());
 		}
-
-		// console.log('WS Close | Users:', game.gong_zhu.users);
-
-		// if (this.username) game.gong_zhu.removeUser(this.username);
-		// if (this.connected) {
-		// 	game.gong_zhu.leaveServer(this, this.connected);
-		// 	if (this.connected.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
-		// 		this.connected,
-		// 		{tag: 'joinedLobby', status: 1, data: this.connected}
-		// 	);
-		// 	else Utils.broadcastToConnected(game.gong_zhu.users, 
-		// 		this.connected,
-		// 		{tag: 'otherLeftLobby', status: 1, data: this.connected}
-		// 	)
-		// }
-		// for (let ws of wss.clients) {
-		// 	ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
-		// }
 	});
 });
 

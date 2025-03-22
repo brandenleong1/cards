@@ -200,7 +200,7 @@ function gameNSL(server) {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
 		if (server.gameData.hands.every(e => !e[0].length)) {
-			if (server.gameData.scores.some(e => e[0] <= server.gameData.settings.losingThreshold)) {
+			if (server.gameData.scores.some(e => (e[0] + e[1]) <= server.gameData.settings.losingThreshold)) {
 				server.gameData.gameState = 'LEADERBOARD';
 			} else {
 				server.gameData.gameState = 'SCORE';

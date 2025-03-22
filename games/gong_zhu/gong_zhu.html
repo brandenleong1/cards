@@ -247,17 +247,18 @@
 			</div>
 
 			<div class="content-container-vertical" style="flex: 100 1 0; height: 100%; width: 0; row-gap: 10px;">
-				<div class="content-container-vertical" id="game-gui">
+				<div class="content-container-vertical" id="game-gui" style="row-gap: 0;">
 					<div class="game-gui-frame" id="game-gui-frame-game" style="display: none;">
-						<div id="game-gui-hands-self-wrapper">
-							<div id="game-gui-hands-self"></div>
-						</div>
-
 						<div style="font-weight: bold;">Trick: <span id="game-gui-trick-count">1</span></div>
 						<div class="content-break-vertical"></div>
 						<div id="game-gui-hands"></div>
 						<div class="content-break-vertical"></div>
 						<div id="game-gui-shown-cards"></div>
+						<div class="content-break-vertical" style="flex-grow: 1;"></div>
+
+						<div id="game-gui-hands-self-wrapper">
+							<div id="game-gui-hands-self"></div>
+						</div>
 					</div>
 
 					<div class="game-gui-frame" id="game-gui-frame-leaderboard" style="display: none;">
@@ -282,7 +283,7 @@
 					<div class="content-header-2"><b>Console</b></div>
 					<div class="content-container-vertical" id="game-console-output"></div>
 					<label style="display: flex; align-items: center; border-top: 1px solid var(--color_txt); cursor: text; font-family: monospace;"> >>
-						<input type="text" id="game-console-input" style="font-family: monospace;" placeholder="Enter command" />
+						<input type="text" id="game-console-input" style="font-family: monospace;" placeholder="Enter command (HELP for command list)" />
 					</label>
 				</div>
 			</div>
