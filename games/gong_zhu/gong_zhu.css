@@ -48,7 +48,7 @@
 	min-height: calc(100% - 4px);
 	border-radius: 5px;
 	display: flex;
-	align-items:center;
+	align-items: center;
 	width: fit-content;
 }
 

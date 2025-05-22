@@ -21,6 +21,7 @@ export const defaultSettings = {
 	scores: [],
 	round: 0,
 	settings: {
+		spectatorPolicy: 'disallowed',
 		losingThreshold: -1000,
 		expose3: false,
 		zhuYangManJuan: false
@@ -490,7 +491,7 @@ export function processCommand(data, ws, server) {
 						break;
 					}
 
-					gameData.hands[myIdx][0] = Utils.sortArray(gameData.hands[myIdx][0], args);
+					gameData.hands[myIdx][0] = Utils.sortArrayFromIndices(gameData.hands[myIdx][0], args);
 				}
 
 				Utils.broadcastGameState(ws, server, obfuscateGameData);

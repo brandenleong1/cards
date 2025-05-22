@@ -59,8 +59,10 @@
 #load-lobby-user-list {
 	width: 500px;
 	max-height: 50vh;
+	display: grid;
 	padding: 20px 0;
 	overflow-y: auto;
+	grid-template-columns: repeat(2, max-content);
 	row-gap: 5px;
 	background-color: var(--color_bg2);
 }
@@ -74,6 +76,16 @@
 
 #lobby-user-list {
 	padding: 0 20px;
+	display: grid;
+	grid-template-columns: repeat(2, max-content);
+	row-gap: 5px;
+}
+
+#load-lobby-user-list > div, #lobby-user-list > div {
+	column-gap: 15px;
+	display: grid;
+	grid-column: 1 / -1;
+	grid-template-columns: subgrid;
 }
 
 #lobby-settings table {

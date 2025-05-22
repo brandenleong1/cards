@@ -248,11 +248,25 @@ function updateLobbies(data) {
 
 			let list = document.querySelector('#load-lobby-user-list');
 			Utils.clearDiv(list);
-			for (let user of server.connected) {
-				let div = document.createElement('div');
-				div.classList.add('content-text');
-				div.innerText = (user == server.host ? '⭐ ' : '') + user;
-				list.append(div);
+			for (let i = 0; i < server.connected.length; i++) {
+				let div1 = document.createElement('div');
+				div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
+
+				let user = server.connected[i];
+				for (let j = 0; j < 2; j++) {
+					let div2 = document.createElement('div');
+					div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+
+					if (j == 0) {
+						div2.innerText = (user == server.host ? '⭐ ' : '');
+					} else if (j == 1) {
+						div2.innerText = user;
+					}
+
+					div1.append(div2);
+				}
+
+				list.append(div1);
 			}
 
 			await Popup.popup(popup);
@@ -312,26 +326,44 @@ function showLobby(data) {
 
 	document.querySelector('#btn-start-game').style.display = (server.host == username) ? null : 'none';
 
+	console.log(server);
+
 	let list = document.querySelector('#lobby-user-list');
 	Utils.clearDiv(list);
-	for (let user of server.connected) {
-		let div = document.createElement('div');
-		div.classList.add('content-text');
-		div.innerText = (user == server.host ? '⭐ ' : '') + user + (user == username ? ' ⇐ You' : '');
-		list.append(div);
+	for (let i = 0; i < server.connected.length; i++) {
+		let div1 = document.createElement('div');
+		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
+
+		let user = server.connected[i];
+		for (let j = 0; j < 2; j++) {
+			let div2 = document.createElement('div');
+			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+
+			if (j == 0) {
+				div2.innerText = (user == server.host ? '⭐ ' : '');
+			} else if (j == 1) {
+				div2.innerText = user + (user == username ? ' <= You' : '');
+			}
+
+			div1.append(div2);
+		}
+
+		list.append(div1);
 	}
 
-	document.querySelector('#lobby-settings-losing-threshold').value = server.gameData.settings.losingThreshold;
-	document.querySelector('#lobby-settings-expose-3').checked = server.gameData.settings.expose3;
-	document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gameData.settings.zhuYangManJuan;
+document.querySelector('#lobby-settings-spectator-policy').value = server.gameData.settings.spectatorPolicy;
+document.querySelector('#lobby-settings-losing-threshold').value = server.gameData.settings.losingThreshold;
+document.querySelector('#lobby-settings-expose-3').checked = server.gameData.settings.expose3;
+document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gameData.settings.zhuYangManJuan;
 
-	for (let e of document.querySelectorAll('#lobby-settings input')) {
-		if (username == server.host) {
-			e.onchange = function() {
-				ws.send(JSON.stringify({tag: 'updateLobbySettings', data: {settings: {
-					losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
-					expose3: document.querySelector('#lobby-settings-expose-3').checked,
-					zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
+for (let e of document.querySelectorAll('#lobby-settings input')) {
+	if (username == server.host) {
+		e.onchange = function() {
+			ws.send(JSON.stringify({tag: 'updateLobbySettings', data: {settings: {
+				spectatorPolicy: document.querySelector('#lobby-settings-spectator-policy').value,
+				losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
+				expose3: document.querySelector('#lobby-settings-expose-3').checked,
+				zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
 				}}}));
 			};
 			e.disabled = false;

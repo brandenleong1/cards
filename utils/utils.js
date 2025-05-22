@@ -135,7 +135,7 @@ export function lerp(a, b, t) {
 }
 
 // arr: Array[any], indices: Array[int]
-export function sortArray(arr, indices) {
+export function sortArrayFromIndices(arr, indices) {
 	let newArr = [];
 	let visited = (new Array(arr.length)).fill(0);
 	for (let i of indices) {

@@ -85,7 +85,7 @@ async function init() {
 
 	}
 
-	for (let e of document.querySelectorAll('#lobby-settings td:nth-child(1)')) {
+	for (let e of document.querySelectorAll('#lobby-settings *[hover-text]')) {
 		Popup.createHoverPopup(e.getAttribute('hover-text'), e);
 	}
 

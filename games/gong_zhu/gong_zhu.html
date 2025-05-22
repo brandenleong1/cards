@@ -207,7 +207,7 @@
 			<div class="content-text" id="lobby-creation"></div>
 			<div class="content-text" id="lobby-host"></div>
 			<div class="content-text" id="lobby-users"></div>
-			<div class="content-container-vertical" id="lobby-user-list"></div>
+			<div id="lobby-user-list"></div>
 
 			<div class="content-break-vertical"></div>
 
@@ -215,6 +215,14 @@
 				<div class="content-header-2">Settings</div>
 				<div class="content-table">
 					<table class="no-border">
+						<tr>
+							<td hover-text="Set the policy for spectator rotation">Spectator Policy</td>
+							<td><select id="lobby-settings-spectator-policy">
+								<option value="disallowed" title="No spectators allowed" selected="selected">Disallowed</option>
+								<option value="round-robin" title="Spectators rotate in the order they join">Round Robin</option>
+								<option value="replace-losers" title="Only loser(s) rotate out">Replace Losers</option>
+							</select></td>
+						</tr>
 						<tr>
 							<td hover-text="If a player has a score less than or equal to the losing threshold, the game ends">Losing Threshold</td>
 							<td><input type="number" id="lobby-settings-losing-threshold" max="0" value="-1000" /></td>
@@ -402,7 +410,7 @@
 			<div class="content-text" id="load-lobby-creation" style="align-self: flex-start;"></div>
 			<div class="content-text" id="load-lobby-host" style="align-self: flex-start;"></div>
 			<div class="content-text" id="load-lobby-users" style="align-self: flex-start;"></div>
-			<div class="content-container-vertical" id="load-lobby-user-list"></div>
+			<div id="load-lobby-user-list"></div>
 			<div class="button-positive-2">Join</div>
 		</div>
 
