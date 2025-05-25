@@ -159,9 +159,9 @@ export function nullify(arr) {
 }
 
 export function broadcastToConnected(users, server, data, ...ignoredUsernames) {
-	for (let username of server.connected) {
-		let ws = users.get(username);
-		if (!ignoredUsernames.includes(username) && ws.active) ws.send(JSON.stringify(data));
+	for (let user of server.connected) {
+		let ws = users.get(user.username);
+		if (!ignoredUsernames.includes(user.username) && ws.active) ws.send(JSON.stringify(data));
 	}
 }
 
@@ -171,7 +171,7 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 	delete serverInfo.gameData;
 
 	for (let i = 0; i < server.connected.length; i++) {
-		let username = server.connected[i];
+		let username = server.connected[i].username;
 		let ws = users.get(username);
 
 		if (ws.active) {
@@ -239,4 +239,34 @@ export function purgeArchive(archive, olderThan = 60 * 1000) {
 	});
 
 	return purged;
+}
+
+export function getUsersSortedByPriority(server) {
+	let connected = structuredClone(server.connected).sort(function(a, b) {
+		return a.priority - b.priority;
+	});
+
+	return connected;	
+}
+
+export function updatePriorities(server) {
+	let connected = getUsersSortedByPriority(server);
+
+	for (let i = 0; i < connected.length; i++) {
+		connected[i].priority = i;
+	}
+	connected.sort(function(a, b) {
+		return (a.username).localeCompare(b.username);
+	})
+	
+	server.connected = connected;
+}
+
+export function getLowestPriority(server) {
+	return server.connected.map(e => e.priority).reduce(
+		function(accumulator, currentValue) {
+			return Math.max(accumulator, currentValue);
+		},
+		-Infinity
+	)
 }

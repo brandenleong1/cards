@@ -217,7 +217,11 @@ function updateLobbies(data) {
 
 		let div2 = document.createElement('div');
 		div2.classList.add('content-text');
-		div2.innerText = 'Players: ' + server.connected.length;
+		if (server.connected.length > server.gameData.maxPlayers) {
+			div2.innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers);
+		} else {
+			div2.innerText = 'Players: ' + server.connected.length;
+		}
 
 		let div3 = document.createElement('div');
 		div3.classList.add('content-break-vertical');
@@ -244,7 +248,11 @@ function updateLobbies(data) {
 			document.querySelector('#load-lobby-name').innerText = server.name;
 			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 			document.querySelector('#load-lobby-host').innerText = 'Host: ' + server.host;
-			document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
+			if (server.connected.length > server.gameData.maxPlayers) {
+				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers);
+			} else {
+				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
+			}
 
 			let list = document.querySelector('#load-lobby-user-list');
 			Utils.clearDiv(list);
@@ -253,15 +261,21 @@ function updateLobbies(data) {
 				div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
 
 				let user = server.connected[i];
-				for (let j = 0; j < 2; j++) {
+				for (let j = 0; j < 3; j++) {
 					let div2 = document.createElement('div');
 					div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+					div2.style.alignSelf = 'center';
+					div2.style.lineHeight = '1em';
 
 					if (j == 0) {
-						div2.innerText = (user == server.host ? '⭐ ' : '');
+						div2.innerText = (user.username == server.host ? '\u{1F732} ' : '');
 					} else if (j == 1) {
-						div2.innerText = user;
+						div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{23FF}' : '');
+					} else if (j == 2) {
+						div2.innerText = user.username;
 					}
+
+					if (user.priority >= server.gameData.maxPlayers) div2.style.filter = 'opacity(60%)';
 
 					div1.append(div2);
 				}
@@ -322,7 +336,11 @@ function showLobby(data) {
 	document.querySelector('#lobby-name').innerText = 'Lobby [' + server.name + ']';
 	document.querySelector('#lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 	document.querySelector('#lobby-host').innerText = 'Host: ' + server.host;
-	document.querySelector('#lobby-users').innerText = 'Players: ' + server.connected.length;
+	if (server.connected.length > server.gameData.maxPlayers) {
+		document.querySelector('#lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers);
+	} else {
+		document.querySelector('#lobby-users').innerText = 'Players: ' + server.connected.length;
+	}
 
 	document.querySelector('#btn-start-game').style.display = (server.host == username) ? null : 'none';
 
@@ -335,15 +353,26 @@ function showLobby(data) {
 		div1.style.gridRow = (i + 1) + ' / ' + (i + 2);
 
 		let user = server.connected[i];
-		for (let j = 0; j < 2; j++) {
+		for (let j = 0; j < 4; j++) {
 			let div2 = document.createElement('div');
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+			div2.style.alignSelf = 'center';
+			div2.style.lineHeight = '1em';
 
 			if (j == 0) {
-				div2.innerText = (user == server.host ? '⭐ ' : '');
+				div2.innerText = (user.username == server.host ? '\u{1F732} ' : '');
 			} else if (j == 1) {
-				div2.innerText = user + (user == username ? ' <= You' : '');
+				div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{23FF}' : '');
+			} else if (j == 2) {
+				div2.innerText = user.username + (user.username == username ? ' <= You' : '');
+			} else if (j == 3) {
+				div2.innerText = '(' + user.priority + ')';
+				div2.style.textAlign = 'center';
+				div2.style.fontSize = '0.8em';
+				div2.style.color = 'var(--color_txt2)';
 			}
+
+			if (user.priority >= server.gameData.maxPlayers) div2.style.filter = 'opacity(60%)';
 
 			div1.append(div2);
 		}
@@ -356,7 +385,7 @@ document.querySelector('#lobby-settings-losing-threshold').value = server.gameDa
 document.querySelector('#lobby-settings-expose-3').checked = server.gameData.settings.expose3;
 document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gameData.settings.zhuYangManJuan;
 
-for (let e of document.querySelectorAll('#lobby-settings input')) {
+for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings select')) {
 	if (username == server.host) {
 		e.onchange = function() {
 			ws.send(JSON.stringify({tag: 'updateLobbySettings', data: {settings: {
@@ -531,12 +560,13 @@ async function drawGUI(data) { // TODO animation
 		if (Math.abs(i[0]) > absMaxScore) absMaxScore = Math.abs(i[0]);
 	}
 
-	let myIdx;
-	for (let i = 0; i < gameData.turnOrder.length; i++) {
-		if (username == gameData.turnOrder[i]) {
-			myIdx = i;
-			break;
-		}
+	let myIdx = gameData.turnOrder.findIndex(e => e == username);
+	let isSpectator = myIdx == -1;
+
+	if (isSpectator) {
+		let consoleInput = document.querySelector('#game-console-input');
+		consoleInput.readonly = true;
+		consoleInput.placeholder = 'You are a spectator!';
 	}
 
 	let sortedOrder = gameData.scores.map((e, i) => [e[0], i]).toSorted((a, b) => {
@@ -553,10 +583,12 @@ async function drawGUI(data) { // TODO animation
 			let div2 = document.createElement('div');
 			div2.classList.add('content-container-text');
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+			div2.style.alignSelf = 'center';
+			div2.style.lineHeight = '1em';
 
 			if (j == 0) {
 				if (username == gameData.turnOrder[sortedOrder[i][1]]) {
-					div2.innerText = '⭐';
+					div2.innerText = '\u{1F464}';
 				}
 			} else if (j == 1) {
 				div2.innerText = gameData.turnOrder[sortedOrder[i][1]];
@@ -575,76 +607,78 @@ async function drawGUI(data) { // TODO animation
 		leaderboard.append(div1);
 	}
 
-	let playableCards = new Set();
-	switch (gameData.gameState) {
-		case 'SHOW_3':
-		case 'SHOW_ALL':
-			[11, 13, 36, 48].filter(e => gameData.stacks[1].findIndex(e1 => e1[0] == e) == -1).forEach(e => playableCards.add(e));
-			break;
-		case 'PLAY_0':
-			if (username == gameData.turnOrder[gameData.turnFirstIdx]) {
-				gameData.hands[myIdx][0].filter(e => !gameData.hands[myIdx][1].includes(e)).forEach(e => playableCards.add(e));
-				gameData.hands[myIdx][1].filter(e => Cards.filterBySuit(e, gameData.hands[myIdx][0]).length == 1).forEach(e => playableCards.add(e));
-			}
-			break;
-		case 'PLAY_1':
-			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length]) {
-				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-				if (filtered.length == 1) {
-					filtered.forEach(e => playableCards.add(e));
-				} else if (filtered.length) {
-					filtered.forEach(e => {
-						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
-					});
-				} else {
-					gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+	if (!isSpectator) {
+		let playableCards = new Set();
+		switch (gameData.gameState) {
+			case 'SHOW_3':
+			case 'SHOW_ALL':
+				[11, 13, 36, 48].filter(e => gameData.stacks[1].findIndex(e1 => e1[0] == e) == -1).forEach(e => playableCards.add(e));
+				break;
+			case 'PLAY_0':
+				if (username == gameData.turnOrder[gameData.turnFirstIdx]) {
+					gameData.hands[myIdx][0].filter(e => !gameData.hands[myIdx][1].includes(e)).forEach(e => playableCards.add(e));
+					gameData.hands[myIdx][1].filter(e => Cards.filterBySuit(e, gameData.hands[myIdx][0]).length == 1).forEach(e => playableCards.add(e));
 				}
-			}
-			break;
-		case 'PLAY_2':
-			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length]) {
-				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-				if (filtered.length == 1) {
-					filtered.forEach(e => playableCards.add(e));
-				} else if (filtered.length) {
-					filtered.forEach(e => {
-						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
-					});
-				} else {
-					gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+				break;
+			case 'PLAY_1':
+				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length]) {
+					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+					if (filtered.length == 1) {
+						filtered.forEach(e => playableCards.add(e));
+					} else if (filtered.length) {
+						filtered.forEach(e => {
+							if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+						});
+					} else {
+						gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+					}
 				}
-			}
-			break;
-		case 'PLAY_3':
-			if (username == gameData.turnOrder[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length]) {
-				let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-				if (filtered.length == 1) {
-					filtered.forEach(e => playableCards.add(e));
-				} else if (filtered.length) {
-					filtered.forEach(e => {
-						if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
-					});
-				} else {
-					gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+				break;
+			case 'PLAY_2':
+				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length]) {
+					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+					if (filtered.length == 1) {
+						filtered.forEach(e => playableCards.add(e));
+					} else if (filtered.length) {
+						filtered.forEach(e => {
+							if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+						});
+					} else {
+						gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+					}
 				}
-			}
-			break;
-	}
-	for (let i = 0; i < gameData.hands[myIdx][0].length; i++) {
-		let card = gameData.hands[myIdx][0][i];
+				break;
+			case 'PLAY_3':
+				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length]) {
+					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
+					if (filtered.length == 1) {
+						filtered.forEach(e => playableCards.add(e));
+					} else if (filtered.length) {
+						filtered.forEach(e => {
+							if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
+						});
+					} else {
+						gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
+					}
+				}
+				break;
+		}
+		for (let i = 0; i < gameData.hands[myIdx][0].length; i++) {
+			let card = gameData.hands[myIdx][0][i];
 
-		let div1 = document.createElement('div');
+			let div1 = document.createElement('div');
 
-		let div2 = document.createElement('div');
-		div2.innerText = i;
-		if (gameData.hands[myIdx][1].indexOf(card) != -1) div2.style.color = 'var(--color_red)';
-		let div3 = document.createElement('div');
-		div3.innerText = drawCard(card);
+			let div2 = document.createElement('div');
+			div2.innerText = i;
+			if (gameData.hands[myIdx][1].indexOf(card) != -1) div2.style.color = 'var(--color_red)';
+			let div3 = document.createElement('div');
+			div3.innerText = drawCard(card);
 
-		if (!playableCards.has(card)) div1.classList.add('unplayable');
+			if (!playableCards.has(card)) div1.classList.add('unplayable');
 
-		div1.append(div2, div3);
-		handsSelf.append(div1);
+			div1.append(div2, div3);
+			handsSelf.append(div1);
+		}
 	}
 
 	for (let i = 0; i < gameData.turnOrder.length; i++) {
@@ -656,6 +690,8 @@ async function drawGUI(data) { // TODO animation
 			let div2 = document.createElement('div');
 			div2.classList.add('content-container-text');
 			div2.style.gridColumn = (j + 1) + ' / ' + (j + 2);
+			div2.style.alignSelf = 'center';
+			div2.style.lineHeight = '1em';
 
 			if (j == 0) {
 				let relativeTurn = ((i - gameData.turnFirstIdx) % (gameData.turnOrder.length)) + (((i - gameData.turnFirstIdx) % (gameData.turnOrder.length)) < 0 ? gameData.turnOrder.length : 0);
@@ -672,7 +708,7 @@ async function drawGUI(data) { // TODO animation
 				}
 			} else if (j == 1) {
 				if (username == gameData.turnOrder[i]) {
-					div2.innerText = '⭐';
+					div2.innerText = '\u{1F464}';
 					myIdx = i;
 				}
 			} else if (j == 2) {

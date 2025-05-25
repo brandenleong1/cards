@@ -79,13 +79,13 @@ export function getServerIdx(serverData) {
 export function joinServer(ws, server) {
 	let idx = getServerIdx(server);
 
-	console.log(servers[idx]);
-
 	if (idx == -1) return [0, 'Server does not exist'];
-	else if (servers[idx].gameData.maxPlayers == servers[idx].connected.length) return [0, 'Server full'];
+	else if (servers[idx].gameData.settings.spectatorPolicy == 'disallowed' && servers[idx].gameData.maxPlayers == servers[idx].connected.length) return [0, 'Server full'];
 	else {
-		Utils.binaryInsert(servers[idx].connected, ws.username, function(a, b) {
-			return a.localeCompare(b);
+		let lowestPriority = Utils.getLowestPriority(servers[idx]);
+		if (lowestPriority == -Infinity) lowestPriority = -1;
+		Utils.binaryInsert(servers[idx].connected, {username: ws.username, priority: lowestPriority + 1}, function(a, b) {
+			return (a.username).localeCompare(b.username);
 		});
 		ws.connected = servers[idx];
 		return [1, servers[idx]];
@@ -97,8 +97,8 @@ export function leaveServer(ws, server) {
 
 	if (idx == -1) return [0, 'Server does not exist'];
 	else {
-		let idx2 = Utils.binarySearchIdx(servers[idx].connected, ws.username, function(a, b) {
-			return a.localeCompare(b);
+		let idx2 = Utils.binarySearchIdx(servers[idx].connected, {username: ws.username}, function(a, b) {
+			return (a.username).localeCompare(b.username);
 		});
 		if (idx2 != -1) servers[idx].connected.splice(idx2, 1);
 		if (!servers[idx].connected.length) {
@@ -107,8 +107,9 @@ export function leaveServer(ws, server) {
 		}
 		if (servers[idx].host == ws.username) {
 			let hostIdx = Math.floor(Math.random() * servers[idx].connected.length);
-			servers[idx].host = servers[idx].connected[hostIdx];
+			servers[idx].host = servers[idx].connected[hostIdx].username;
 		}
+		Utils.updatePriorities(servers[idx]);
 		return [1, servers[idx]];
 	}
 }
@@ -120,8 +121,30 @@ export function updateServerSettings(server, settings) {
 		for (let property in settings) {
 			servers[idx].gameData.settings[property] = settings[property];
 		}
+		if (servers[idx].gameData.settings.spectatorPolicy == 'disallowed') removeAllSpectators(servers[idx]);
 		return [1, servers[idx]];
 	}
+}
+
+export function removeAllSpectators(server) {
+	Utils.updatePriorities(server);
+	let toRemove = Utils.getUsersSortedByPriority(server);
+	let hostIdx = toRemove.findIndex(user => user.username == server.host);
+	toRemove.splice(hostIdx, 1);
+	toRemove.splice(0, server.gameData.maxPlayers - 1);
+
+	console.log(toRemove);
+
+	toRemove.forEach(function(user) {
+		let ws = users.get(user.username);
+		let res = leaveServer(ws, server);
+		if (res[0]) {
+			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators Kicked'}));
+			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
+			delete ws.connected;
+		}
+		Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
+	});
 }
 
 export function clearGameData(server) {
@@ -172,14 +195,18 @@ export function initGame(server) {
 		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i]);
 	}
 
-	for (let i = 0; i < server.connected.length; i++) {
+	let connected = structuredClone(server.connected).sort(function(a, b) {
+		return a.priority - b.priority;
+	}).map(user => user.username);
+	gameData.turnOrder = Utils.shuffleArray(connected.slice(0, gameData.maxPlayers));
+
+	for (let i = 0; i < server.gameData.turnOrder.length; i++) {
 		gameData.hands.push(new Array());
 		for (let j = 0; j < 4; j++) gameData.hands[i].push(new Array());
 		gameData.scores.push(new Array());
 		for (let j = 0; j < 2; j++) gameData.scores[i].push(0);
 		gameData.needToAct.push(0);
 	}
-	gameData.turnOrder = Utils.shuffleArray(server.connected);
 
 	gameData.gameState = 'LEADERBOARD';
 	gameData.round = 0;
@@ -733,12 +760,12 @@ function scoreFromCards(cardArr, server) {
 	return c;
 }
 
-export function obfuscateGameData(gameData, idx) {
+export function obfuscateGameData(gameData, turnOrderIdx) {
 	let gameDataCopy = structuredClone(gameData);
 
 	Utils.nullify(gameDataCopy.decks);
 	gameDataCopy.hands.forEach((hand, i) => {
-		if (i != idx) Utils.nullify(hand[0]);
+		if (i != turnOrderIdx) Utils.nullify(hand[0]);
 	});
 	Utils.nullify(gameDataCopy.stacks[0]);
 	gameDataCopy.stacks[1] = gameDataCopy.stacks[1].filter(e =>
