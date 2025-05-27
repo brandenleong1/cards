@@ -186,6 +186,66 @@ function resetRoundData(server) {
 	server.gameData.stacks.forEach(e => e.length = 0);
 }
 
+function rotateSpectators(server) {
+	let front, end;
+	let connected = [];
+
+	let prioritySort = function(a, b) {
+		return a.priority - b.priority;
+	};
+
+	switch (server.gameData.settings.spectatorPolicy) {
+		case 'round-robin':
+			let previousPlayers = new Set(server.gameData.turnOrder);
+			[front, end] = structuredClone(server.connected).reduce(function([p, f], e) {
+				return (previousPlayers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
+			}, [[], []]);
+
+			front.sort(prioritySort);
+			end.sort(prioritySort);
+
+			connected = front.concat(end);
+
+			break;
+		case 'replace-losers':
+			let previousLosers = new Set(server.gameData.turnOrder.filter((e, i) => server.gameData.scores[i][0] <= server.gameData.settings.losingThreshold));
+			let previousWinners = new Set(server.gameData.turnOrder.filter((e, i) => server.gameDatas.scores[i][0] > server.gameData.settings.losingThreshold));
+			[front, end] = structuredClone(server.connected).reduce(function([p, f], e) {
+				return (previousLosers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
+			}, [[], []]);
+
+			end.sort(prioritySort);
+
+			connected = connected.concat(end);
+
+			[end, front] = structuredClone(front).reduce(function([p, f], e) {
+				return (previousWinners.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
+			}, [[], []]);
+
+			front.sort(prioritySort);
+
+			connected = front.concat(end, connected);
+
+			break;
+	}
+
+	for (let i = 0; i < connected.length; i++) {
+		connected[i].priority = i;
+	}
+	connected.sort(function(a, b) {
+		return (a.username).localeCompare(b.username);
+	})
+
+	server.connected = connected;
+}
+
+function generateTurnOrder(server) {
+	let connected = structuredClone(server.connected).sort(function(a, b) {
+		return a.priority - b.priority;
+	}).map(user => user.username);
+	return Utils.shuffleArray(connected.slice(0, server.gameData.maxPlayers));
+}
+
 export function initGame(server) {
 	clearGameData(server);
 	let gameData = server.gameData;
@@ -195,10 +255,7 @@ export function initGame(server) {
 		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i]);
 	}
 
-	let connected = structuredClone(server.connected).sort(function(a, b) {
-		return a.priority - b.priority;
-	}).map(user => user.username);
-	gameData.turnOrder = Utils.shuffleArray(connected.slice(0, gameData.maxPlayers));
+	gameData.turnOrder = generateTurnOrder(server);
 
 	for (let i = 0; i < server.gameData.turnOrder.length; i++) {
 		gameData.hands.push(new Array());
@@ -228,6 +285,7 @@ function gameNSL(server) {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
 		if (server.gameData.hands.every(e => !e[0].length)) {
+			console.log(server.gameData.scores.map(e => (e[0] + e[1])));
 			if (server.gameData.scores.some(e => (e[0] + e[1]) <= server.gameData.settings.losingThreshold)) {
 				server.gameData.gameState = 'LEADERBOARD';
 			} else {
@@ -284,43 +342,6 @@ function gameOFL(server) {
 	} else if (state == 'PLAY_0') {
 		if (!gameData.stacks[0].length && gameData.hands.every(e => !e[3].length)) {
 			gameData.turnFirstIdx = gameData.hands.findIndex(e => e[0].includes(1));
-		} else {
-			let winnerIdx = gameData.turnFirstIdx;
-			let winnerRank = gameData.hands[gameData.turnFirstIdx][3][0] % 13;
-			let trickSuit = Math.floor(gameData.hands[gameData.turnFirstIdx][3][0] / 13);
-			for (let i = 0; i < gameData.turnOrder.length; i++) {
-				let mySuit = Math.floor(gameData.hands[i][3][0] / 13);
-				let myRank = gameData.hands[i][3][0] % 13;
-
-				if (mySuit == trickSuit) {
-					if (myRank == 0 || (winnerRank != 0 && myRank > winnerRank)) {
-						winnerIdx = i;
-						winnerRank = myRank;
-					}
-				}
-			}
-
-			gameData.turnFirstIdx = winnerIdx;
-
-			let played = new Set(gameData.hands.map(e => e[3]).flat());
-			let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
-			important.forEach(e => gameData.hands[winnerIdx][2].push(e));
-			gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
-
-			ret.push({
-				msg: 'Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']',
-				toAll: true
-			});
-
-			gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
-
-			gameData.hands.forEach(e => {
-				for (let j = e[1].length - 1; j >= 0; j--) {
-					if (Math.floor(e[1][j] / 13) == trickSuit) {
-						e[1].splice(j, 1);
-					}
-				}
-			});
 		}
 		ret.push({
 			msg: 'Started Trick ' + (Math.round(gameData.stacks[0].length / 4) + 1) + '; Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] leads...',
@@ -333,45 +354,7 @@ function gameOFL(server) {
 	} else if (state == 'PLAY_3') {
 
 	} else if (state == 'SCORE') {
-		let winnerIdx = gameData.turnFirstIdx;
-		let winnerRank = gameData.hands[gameData.turnFirstIdx][3][0] % 13;
-		let trickSuit = Math.floor(gameData.hands[gameData.turnFirstIdx][3][0] / 13);
-		for (let i = 0; i < gameData.turnOrder.length; i++) {
-			let mySuit = Math.floor(gameData.hands[i][3][0] / 13);
-			let myRank = gameData.hands[i][3][0] % 13;
-
-			if (mySuit == trickSuit) {
-				if (myRank == 0 || (winnerRank != 0 && myRank > winnerRank)) {
-					winnerIdx = i;
-					winnerRank = myRank;
-				}
-			}
-		}
-
-		gameData.turnFirstIdx = winnerIdx;
-
-		let played = new Set(gameData.hands.map(e => e[3]).flat());
-		let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
-		important.forEach(e => gameData.hands[winnerIdx][2].push(e));
-		gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
-
-		ret.push({
-			msg: 'Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']',
-			toAll: true
-		});
-
-		gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
-
-		gameData.hands.forEach(e => {
-			for (let j = e[1].length - 1; j >= 0; j--) {
-				if (Math.floor(e[1][j] / 13) == trickSuit) {
-					e[1].splice(j, 1);
-				}
-			}
-		});
-
 		gameData.scores.forEach((e, i) => {
-			e[0] += e[1];
 			ret.push({
 				msg: 'Player [' + gameData.turnOrder[i] + '] receives ' + (e[1] > 0 ? '+' + e[1] : e[1]),
 				toAll: true
@@ -468,6 +451,11 @@ export function processCommand(data, ws, server) {
 					break;
 				}
 				if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
+					if (gameData.gameState == 'LEADERBOARD') {
+						rotateSpectators(server);
+						generateTurnOrder(server);
+					}
+
 					ret.push(...gameNSL(server));
 					ret.push({
 						msg: 'Started Round ' + gameData.round,
@@ -660,6 +648,51 @@ export function processCommand(data, ws, server) {
 					let shownIdx = gameData.hands[myIdx][1].findIndex(e => e == gameData.hands[myIdx][0][args[0]]);
 					if (shownIdx != -1) gameData.hands[myIdx][1].splice(shownIdx, 1);
 					gameData.hands[myIdx][3].push(...gameData.hands[myIdx][0].splice(args[0], 1));
+
+					if (gameData.gameState == 'PLAY_3') {
+						let winnerIdx = gameData.turnFirstIdx;
+						let winnerRank = gameData.hands[gameData.turnFirstIdx][3][0] % 13;
+						let trickSuit = Math.floor(gameData.hands[gameData.turnFirstIdx][3][0] / 13);
+						for (let i = 0; i < gameData.turnOrder.length; i++) {
+							let mySuit = Math.floor(gameData.hands[i][3][0] / 13);
+							let myRank = gameData.hands[i][3][0] % 13;
+
+							if (mySuit == trickSuit) {
+								if (myRank == 0 || (winnerRank != 0 && myRank > winnerRank)) {
+									winnerIdx = i;
+									winnerRank = myRank;
+								}
+							}
+						}
+
+						gameData.turnFirstIdx = winnerIdx;
+
+						let played = new Set(gameData.hands.map(e => e[3]).flat());
+						let important = played.intersection(new Set([11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 36, 48]));
+						important.forEach(e => gameData.hands[winnerIdx][2].push(e));
+						gameData.scores[winnerIdx][1] = scoreFromCards(gameData.hands[winnerIdx][2], server);
+
+						ret.push({
+							msg: 'Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] wins with [' + GameUtils.card2Str(gameData.hands[winnerIdx][3][0]) + '] and takes [' + [...important].map(e => GameUtils.card2Str(e)).join(', ') + ']',
+							toAll: true
+						});
+
+						gameData.hands.forEach(e => gameData.stacks[0].push(e[3].pop()));
+
+						gameData.hands.forEach(e => {
+							for (let j = e[1].length - 1; j >= 0; j--) {
+								if (Math.floor(e[1][j] / 13) == trickSuit) {
+									e[1].splice(j, 1);
+								}
+							}
+						});
+
+						if (server.gameData.hands.every(e => !e[0].length)) {
+							gameData.scores.forEach((e, i) => {
+								e[0] += e[1];
+							});
+						}
+					}
 
 					ret.push(...gameNSL(server));
 				}

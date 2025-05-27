@@ -258,7 +258,7 @@ export function updatePriorities(server) {
 	connected.sort(function(a, b) {
 		return (a.username).localeCompare(b.username);
 	})
-	
+
 	server.connected = connected;
 }
 

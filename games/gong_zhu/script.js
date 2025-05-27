@@ -757,7 +757,10 @@ async function drawGUI(data) { // TODO animation
 		}
 	}
 
-	for (let e of document.querySelectorAll('.game-gui-server-owner')) e.innerText = server.host;
+	for (let e of document.querySelectorAll('.game-gui-server-owner')) {
+		e.innerText = server.host;
+		if (server.host == username) e.style.color = 'var(--color_red)';
+	}
 
 	// if (animatingGUI) {
 	// 	animatingGUI = false;
