@@ -177,7 +177,7 @@ function resetRoundData(server) {
 		server.gameData.decks[i] = Utils.shuffleArray(server.gameData.decks[i]);
 	}
 
-	for (let i = 0; i < server.connected.length; i++) {
+	for (let i = 0; i < server.gameData.turnOrder.length; i++) {
 		server.gameData.hands.push(new Array());
 		for (let j = 0; j < 4; j++) server.gameData.hands[i].push(new Array());
 	}
@@ -187,7 +187,6 @@ function resetRoundData(server) {
 }
 
 function rotateSpectators(server) {
-	let front, end;
 	let connected = [];
 
 	let prioritySort = function(a, b) {
@@ -195,10 +194,11 @@ function rotateSpectators(server) {
 	};
 
 	switch (server.gameData.settings.spectatorPolicy) {
-		case 'round-robin':
+		case 'round-robin': {
 			let previousPlayers = new Set(server.gameData.turnOrder);
-			[front, end] = structuredClone(server.connected).reduce(function([p, f], e) {
-				return (previousPlayers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
+
+			let [front, end] = structuredClone(server.connected).reduce(function([p, f], e) {
+				return (!previousPlayers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
 			}, [[], []]);
 
 			front.sort(prioritySort);
@@ -207,26 +207,30 @@ function rotateSpectators(server) {
 			connected = front.concat(end);
 
 			break;
-		case 'replace-losers':
+		}
+		case 'replace-losers': {
 			let previousLosers = new Set(server.gameData.turnOrder.filter((e, i) => server.gameData.scores[i][0] <= server.gameData.settings.losingThreshold));
 			let previousWinners = new Set(server.gameData.turnOrder.filter((e, i) => server.gameDatas.scores[i][0] > server.gameData.settings.losingThreshold));
-			[front, end] = structuredClone(server.connected).reduce(function([p, f], e) {
-				return (previousLosers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
+
+			let [front2mid, end] = structuredClone(server.connected).reduce(function([p, f], e) {
+				return (!previousLosers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
 			}, [[], []]);
-
-			end.sort(prioritySort);
-
-			connected = connected.concat(end);
-
-			[end, front] = structuredClone(front).reduce(function([p, f], e) {
+			let [front, mid] = structuredClone(front2mid).reduce(function([p, f], e) {
 				return (previousWinners.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
 			}, [[], []]);
 
 			front.sort(prioritySort);
+			mid.sort(prioritySort);
+			end.sort(prioritySort);
 
-			connected = front.concat(end, connected);
+			connected = front.concat(front, mid, end);
 
 			break;
+		}
+		default: {
+			connected = structuredClone(server.connected);
+			connected.sort(prioritySort);
+		}
 	}
 
 	for (let i = 0; i < connected.length; i++) {
@@ -234,7 +238,7 @@ function rotateSpectators(server) {
 	}
 	connected.sort(function(a, b) {
 		return (a.username).localeCompare(b.username);
-	})
+	});
 
 	server.connected = connected;
 }
@@ -285,7 +289,7 @@ function gameNSL(server) {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
 		if (server.gameData.hands.every(e => !e[0].length)) {
-			console.log(server.gameData.scores.map(e => (e[0] + e[1])));
+			// console.log(server.gameData.scores.map(e => (e[0] + e[1])));
 			if (server.gameData.scores.some(e => (e[0] + e[1]) <= server.gameData.settings.losingThreshold)) {
 				server.gameData.gameState = 'LEADERBOARD';
 			} else {
@@ -317,8 +321,8 @@ function gameOFL(server) {
 	let ret = [];
 
 	if (state == 'SHOW_3') {
-		gameData.round += 1;
 		resetRoundData(server);
+		gameData.round += 1;
 
 		for (let i = 0; i < gameData.turnOrder.length; i++) {
 			for (let j = 0; j < 3; j++) gameData.hands[i][0].push(gameData.decks[0].pop());
@@ -326,8 +330,8 @@ function gameOFL(server) {
 		}
 	} else if (state == 'SHOW_ALL') {
 		if (!gameData.settings.expose3) {
-			gameData.round += 1;
 			resetRoundData(server);
+			gameData.round += 1;
 		}
 
 		while (gameData.decks[0].length) {
@@ -385,9 +389,11 @@ export function processCommand(data, ws, server) {
 	let status = 1;
 
 	let myIdx = gameData.turnOrder.indexOf(ws.username);
-	let relativeIdx = ((myIdx - gameData.turnFirstIdx) % (gameData.turnOrder.length)) + (((myIdx - gameData.turnFirstIdx) % (gameData.turnOrder.length)) < 0 ? gameData.turnOrder.length : 0);
+	let isSpectator = myIdx == -1;
+	let relativeIdx = isSpectator ? -1 : ((myIdx - gameData.turnFirstIdx) % (gameData.turnOrder.length)) + (((myIdx - gameData.turnFirstIdx) % (gameData.turnOrder.length)) < 0 ? gameData.turnOrder.length : 0);
+
 	switch (command.command[0].toLowerCase()) {
-		case 'help':
+		case 'help': {
 			if (command.command.length > 1) {
 				ret.push({
 					msg: 'Too many arguments for [' + commandUpper + '] (max 0)',
@@ -423,7 +429,8 @@ export function processCommand(data, ws, server) {
 				toAll: false
 			});
 			break;
-		case 'exit':
+		}
+		case 'exit': {
 			if (command.command.length > 1) {
 				ret.push({
 					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
@@ -431,16 +438,24 @@ export function processCommand(data, ws, server) {
 				});
 				status = 0;
 			} else {
-				server.gameData.gameState = '';
-				Utils.broadcastToConnected(users, server,
-					{tag: 'broadcastedMessage', data: '[' + ws.username + '] exited to lobby'}
-				);
-				Utils.broadcastToConnected(users, server,
-					{tag: 'joinedLobby', status: 1, data: server}
-				);
+				if (!isSpectator || ws.username == server.host) {
+					server.gameData.gameState = '';
+					Utils.broadcastToConnected(users, server,
+						{tag: 'broadcastedMessage', data: '[' + ws.username + '] exited to lobby'}
+					);
+					Utils.broadcastToConnected(users, server,
+						{tag: 'showLobby', status: 1, data: server}
+					);
+				} else {
+					let res = leaveServer(ws, server);
+					ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
+
+					if (res[0]) delete ws.connected;
+				}
 			}
 			break;
-		case 'deal':
+		}
+		case 'deal': {
 			if (ws.username == server.host) {
 				if (command.command.length > 1) {
 					ret.push({
@@ -451,10 +466,12 @@ export function processCommand(data, ws, server) {
 					break;
 				}
 				if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
-					if (gameData.gameState == 'LEADERBOARD') {
+					if (gameData.gameState == 'LEADERBOARD' && gameData.scores.some(e => e[0] <= gameData.settings.losingThreshold)) {
 						rotateSpectators(server);
-						generateTurnOrder(server);
+						gameData.turnOrder = generateTurnOrder(server);
 					}
+
+					console.log('deal', server);
 
 					ret.push(...gameNSL(server));
 					ret.push({
@@ -476,8 +493,15 @@ export function processCommand(data, ws, server) {
 				status = 0;
 			}
 			break;
-		case 'sort':
-			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
+		}
+		case 'sort': {
+			if (isSpectator) {
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] as a specator',
+					toAll: false
+				});
+				status = 0;
+			} else if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 				ret.push({
 					msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
 					toAll: false
@@ -512,8 +536,15 @@ export function processCommand(data, ws, server) {
 				Utils.broadcastGameState(ws, server, obfuscateGameData);
 			}
 			break;
-		case 'swap':
-			if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
+		}
+		case 'swap': {
+			if (isSpectator) {
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] as a specator',
+					toAll: false
+				});
+				status = 0;
+			} else if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 				ret.push({
 					msg: 'Cannot issue command [' + commandUpper + '] in state [' + gameData.gameState + ']',
 					toAll: false
@@ -554,8 +585,15 @@ export function processCommand(data, ws, server) {
 				Utils.broadcastGameState(ws, server, obfuscateGameData);
 			}
 			break;
-		case 'play':
-			if (
+		}
+		case 'play': {
+			if (isSpectator) {
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] as a specator',
+					toAll: false
+				});
+				status = 0;
+			} else if (
 				gameData.gameState != 'SHOW_3' &&
 				gameData.gameState != 'SHOW_ALL' &&
 				gameData.gameState != ('PLAY_' + relativeIdx)
@@ -700,8 +738,15 @@ export function processCommand(data, ws, server) {
 				Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 			}
 			break;
-		case 'pass':
-			if (command.command.length > 1) {
+		}
+		case 'pass': {
+			if (isSpectator) {
+				ret.push({
+					msg: 'Cannot issue command [' + commandUpper + '] as a specator',
+					toAll: false
+				});
+				status = 0;
+			} if (command.command.length > 1) {
 				ret.push({
 					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
 					toAll: false
@@ -725,8 +770,9 @@ export function processCommand(data, ws, server) {
 				Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 			}
 			break;
-		case 'clear':
-		case 'clr':
+		}
+		case 'clear': {}
+		case 'clr': {
 			if (command.command.length > 1) {
 				ret.push({
 					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
@@ -737,15 +783,18 @@ export function processCommand(data, ws, server) {
 				ws.send(JSON.stringify({tag: 'clearConsole'}));
 			}
 			break;
-		case 'debug':
+		}
+		case 'debug': {
 			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret}));
 			break;
-		default:
+		}
+		default: {
 			ret.push({
 				msg: 'Unknown command [' + commandUpper + ']',
 				toAll: false
 			});
 			status = 0;
+		}
 	}
 
 	return {tag: 'receiveCommand', status: status, data: ret};

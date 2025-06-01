@@ -12,7 +12,7 @@ let messageDecoder = {
 	'updateUserCount':		(data) => {updateUserCount(data);},
 	'updateLobbies':		(data) => {updateLobbies(data);},
 	'createdLobby':			(data) => {joinLobby(data);},
-	'joinedLobby':			(data) => {showLobby(data);},
+	'showLobby':			(data) => {showLobby(data);},
 	'leftLobby':			(data) => {leftLobby(data);},
 	'otherLeftLobby':		(data) => {otherLeftLobby(data);},
 	'startedGame':			(data) => {startedGame(data);},
@@ -218,7 +218,7 @@ function updateLobbies(data) {
 		let div2 = document.createElement('div');
 		div2.classList.add('content-text');
 		if (server.connected.length > server.gameData.maxPlayers) {
-			div2.innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers);
+			div2.innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
 		} else {
 			div2.innerText = 'Players: ' + server.connected.length;
 		}
@@ -249,7 +249,7 @@ function updateLobbies(data) {
 			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 			document.querySelector('#load-lobby-host').innerText = 'Host: ' + server.host;
 			if (server.connected.length > server.gameData.maxPlayers) {
-				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers);
+				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
 			} else {
 				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
 			}
@@ -270,7 +270,7 @@ function updateLobbies(data) {
 					if (j == 0) {
 						div2.innerText = (user.username == server.host ? '\u{1F732} ' : '');
 					} else if (j == 1) {
-						div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{23FF}' : '');
+						div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{1F441}' : '');
 					} else if (j == 2) {
 						div2.innerText = user.username;
 					}
@@ -337,7 +337,7 @@ function showLobby(data) {
 	document.querySelector('#lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 	document.querySelector('#lobby-host').innerText = 'Host: ' + server.host;
 	if (server.connected.length > server.gameData.maxPlayers) {
-		document.querySelector('#lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers);
+		document.querySelector('#lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
 	} else {
 		document.querySelector('#lobby-users').innerText = 'Players: ' + server.connected.length;
 	}
@@ -362,7 +362,7 @@ function showLobby(data) {
 			if (j == 0) {
 				div2.innerText = (user.username == server.host ? '\u{1F732} ' : '');
 			} else if (j == 1) {
-				div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{23FF}' : '');
+				div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{1F441}' : '');
 			} else if (j == 2) {
 				div2.innerText = user.username + (user.username == username ? ' <= You' : '');
 			} else if (j == 3) {
@@ -418,9 +418,11 @@ function leftLobby(data) {
 	getLobbies();
 	handlers.set('lobbyRefresh', setInterval(getLobbies, 2000));
 
+	document.querySelector('#title').style.display = null;
 	document.querySelector('#username').style.display = null;
 	document.querySelector('#lobby-menu').style.display = null;
 	document.querySelector('#lobby').style.display = 'none';
+	document.querySelector('#game').style.display = 'none';
 }
 
 function otherLeftLobby(data) {
@@ -563,11 +565,13 @@ async function drawGUI(data) { // TODO animation
 	let myIdx = gameData.turnOrder.findIndex(e => e == username);
 	let isSpectator = myIdx == -1;
 
+	let consoleInput = document.querySelector('#game-console-input');
 	if (isSpectator) {
-		let consoleInput = document.querySelector('#game-console-input');
-		consoleInput.readonly = true;
 		consoleInput.placeholder = 'You are a spectator!';
+	} else {
+		consoleInput.placeholder = 'Enter command';
 	}
+	consoleInput.placeholder += ' (HELP for command list)';
 
 	let sortedOrder = gameData.scores.map((e, i) => [e[0], i]).toSorted((a, b) => {
 		if (a[0] != b[0]) return b[0] - a[0];
@@ -610,17 +614,19 @@ async function drawGUI(data) { // TODO animation
 	if (!isSpectator) {
 		let playableCards = new Set();
 		switch (gameData.gameState) {
-			case 'SHOW_3':
-			case 'SHOW_ALL':
+			case 'SHOW_3': {}
+			case 'SHOW_ALL': {
 				[11, 13, 36, 48].filter(e => gameData.stacks[1].findIndex(e1 => e1[0] == e) == -1).forEach(e => playableCards.add(e));
 				break;
-			case 'PLAY_0':
+			}
+			case 'PLAY_0': {
 				if (username == gameData.turnOrder[gameData.turnFirstIdx]) {
 					gameData.hands[myIdx][0].filter(e => !gameData.hands[myIdx][1].includes(e)).forEach(e => playableCards.add(e));
 					gameData.hands[myIdx][1].filter(e => Cards.filterBySuit(e, gameData.hands[myIdx][0]).length == 1).forEach(e => playableCards.add(e));
 				}
 				break;
-			case 'PLAY_1':
+			}
+			case 'PLAY_1': {
 				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length]) {
 					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
 					if (filtered.length == 1) {
@@ -634,7 +640,8 @@ async function drawGUI(data) { // TODO animation
 					}
 				}
 				break;
-			case 'PLAY_2':
+			}
+			case 'PLAY_2': {
 				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length]) {
 					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
 					if (filtered.length == 1) {
@@ -648,7 +655,8 @@ async function drawGUI(data) { // TODO animation
 					}
 				}
 				break;
-			case 'PLAY_3':
+			}
+			case 'PLAY_3': {
 				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length]) {
 					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
 					if (filtered.length == 1) {
@@ -662,6 +670,7 @@ async function drawGUI(data) { // TODO animation
 					}
 				}
 				break;
+			}
 		}
 		for (let i = 0; i < gameData.hands[myIdx][0].length; i++) {
 			let card = gameData.hands[myIdx][0][i];

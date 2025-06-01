@@ -246,7 +246,7 @@ export function getUsersSortedByPriority(server) {
 		return a.priority - b.priority;
 	});
 
-	return connected;	
+	return connected;
 }
 
 export function updatePriorities(server) {
