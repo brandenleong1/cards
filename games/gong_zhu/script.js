@@ -248,8 +248,8 @@ function updateLobbies(data) {
 			document.querySelector('#load-lobby-name').innerText = server.name;
 			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 			document.querySelector('#load-lobby-host').innerText = 'Host: ' + server.host;
-			if (server.connected.length > server.gameData.maxPlayers) {
-				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
+			if (server.gameData.settings.spectatorPolicy != 'disallowed') {
+				document.querySelector('#load-lobby-users').innerText = 'Players: ' + Math.min(server.gameData.maxPlayers, server.connected.length) + ' + ' + Math.max(0, server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
 			} else {
 				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
 			}

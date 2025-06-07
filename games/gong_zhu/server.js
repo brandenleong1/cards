@@ -80,7 +80,7 @@ export function joinServer(ws, server) {
 	let idx = getServerIdx(server);
 
 	if (idx == -1) return [0, 'Server does not exist'];
-	else if (servers[idx].gameData.settings.spectatorPolicy == 'disallowed' && servers[idx].gameData.maxPlayers == servers[idx].connected.length) return [0, 'Server full'];
+	else if (servers[idx].gameData.settings.spectatorPolicy == 'disallowed' && servers[idx].gameData.maxPlayers <= servers[idx].connected.length) return [0, 'Server full (Spectators disallowed)'];
 	else {
 		let lowestPriority = Utils.getLowestPriority(servers[idx]);
 		if (lowestPriority == -Infinity) lowestPriority = -1;
@@ -139,12 +139,13 @@ export function removeAllSpectators(server) {
 		let ws = users.get(user.username);
 		let res = leaveServer(ws, server);
 		if (res[0]) {
-			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators Kicked'}));
+			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators kicked'}));
 			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
 			delete ws.connected;
 		}
-		Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 	});
+
+	server.connected.forEach(user => users.get(user.username).send(JSON.stringify({tag: 'showLobby', status: 1, data: server})));
 }
 
 export function clearGameData(server) {
@@ -467,8 +468,19 @@ export function processCommand(data, ws, server) {
 				}
 				if (gameData.gameState == 'LEADERBOARD' || gameData.gameState == 'SCORE') {
 					if (gameData.gameState == 'LEADERBOARD' && gameData.scores.some(e => e[0] <= gameData.settings.losingThreshold)) {
+						let previousTurnOrder = new Set(gameData.turnOrder);
+
 						rotateSpectators(server);
 						gameData.turnOrder = generateTurnOrder(server);
+
+						let newTurnOrder = new Set(gameData.turnOrder);
+
+						for (let username of previousTurnOrder) {
+							if (!newTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now spectating!'}));
+						}
+						for (let username of newTurnOrder) {
+							if (!previousTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now playing!'}));
+						}
 					}
 
 					console.log('deal', server);
@@ -746,7 +758,7 @@ export function processCommand(data, ws, server) {
 					toAll: false
 				});
 				status = 0;
-			} if (command.command.length > 1) {
+			} else if (command.command.length > 1) {
 				ret.push({
 					msg: 'Too many arguments for [' + commandUpper + '] (need 0)',
 					toAll: false

@@ -136,6 +136,14 @@ let messageDecoder = {
 		}
 
 		game.gong_zhu.initGame(server);
+
+		let newTurnOrder = new Set(server.gameData.turnOrder);
+		for (let user of server.connected) {
+			game.gong_zhu.users.get(user.username).send(JSON.stringify({
+				tag: 'broadcastedMessage',
+				data: (newTurnOrder.has(user.username) ? 'You are now playing!' : 'You are now spectating!')
+			}));
+		}
 		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
 	},
 	'sendCommand': (ws, data) => {
