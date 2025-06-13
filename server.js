@@ -224,6 +224,7 @@ wss.on('connection', function(ws, req) {
 	ws.on('message', function(data, isBinary) {
 		data = isBinary ? data : data.toString();
 		data = JSON.parse(data);
+		console.log(ws.username, data);
 
 		let tags = data.tag.split('/');
 		let func;
