@@ -647,10 +647,13 @@ export function processCommand(data, ws, server) {
 					let cards = args.map(e => gameData.hands[myIdx][0][e]);
 					let val = gameData.gameState == 'SHOW_3' ? 4 : 2;
 					for (let e of cards) {
-						if (gameData.stacks[1].indexOf(e) == -1) {
+						if (gameData.hands[myIdx][1].indexOf(e) == -1) {
 							gameData.stacks[1].push([e, val]);
 							gameData.hands[myIdx][1].push(e);
-							ret.push(['Shown card [' + GameUtils.card2Str(e) + '] for x' + val + ' value', 0]);
+							ret.push({
+								msg: 'Shown card [' + GameUtils.card2Str(e) + '] for x' + val + ' value',
+								toAll: false
+							});
 						}
 					}
 				} else {
