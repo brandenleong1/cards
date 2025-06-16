@@ -481,6 +481,7 @@ function sendChat() {
 
 function receiveChat(data) {
 	let output = document.querySelector('#game-chat-output');
+	let isAtBottom = !Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight);
 
 	let div = document.createElement('div');
 	let span1 = document.createElement('span');
@@ -499,7 +500,7 @@ function receiveChat(data) {
 
 	div.append(span1, span2);
 	output.append(div);
-	if (!Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight)) div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+	if (isAtBottom) div.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
 async function drawGUI(data) { // TODO animation
