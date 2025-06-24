@@ -861,13 +861,18 @@ export function obfuscateGameData(gameData, turnOrderIdx) {
 	let gameDataCopy = structuredClone(gameData);
 
 	Utils.nullify(gameDataCopy.decks);
-	gameDataCopy.hands.forEach((hand, i) => {
-		if (i != turnOrderIdx) Utils.nullify(hand[0]);
-	});
 	Utils.nullify(gameDataCopy.stacks[0]);
 	gameDataCopy.stacks[1] = gameDataCopy.stacks[1].filter(e =>
 		!((gameDataCopy.gameState == 'SHOW_3' && e[1] == 4) || (gameDataCopy.gameState == 'SHOW_ALL' && e[1] == 2))
 	);
+
+	let shownCards = new Set(gameDataCopy.stacks[1].map(e => e[0]));
+	gameDataCopy.hands.forEach((hand, i) => {
+		if (i != turnOrderIdx) {
+			Utils.nullify(hand[0]);
+			hand[1] = hand[1].filter(e => shownCards.has(e));
+		}
+	});
 
 	return gameDataCopy;
 }
