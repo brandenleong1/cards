@@ -81,6 +81,7 @@ let messageDecoder = {
 	},
 	'joinLobby': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(data.data);
+		if (idx == -1) return;
 		let server = game.gong_zhu.servers[idx];
 		let res = game.gong_zhu.joinServer(ws, data.data);
 		if (res[0] && server.gameData.gameState == '') {
@@ -95,7 +96,10 @@ let messageDecoder = {
 	},
 	'leaveLobby': (ws, data) => {
 		if (ws.connected) {
-			let server = ws.connected;
+			let idx = game.gong_zhu.getServerIdx(ws.connected);
+			if (idx == -1) return;
+			let server = game.gong_zhu.servers[idx];
+
 			let isPlayerOrHost = (ws.username == server.host) || server.gameData.turnOrder.includes(ws.username);
 			let res = game.gong_zhu.leaveServer(ws, server);
 			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
@@ -116,6 +120,7 @@ let messageDecoder = {
 		if (!ws.connected) return;
 
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		if (idx == -1) return;
 		let server = game.gong_zhu.servers[idx];
 		if (ws.username == server.host) {
 			let res = game.gong_zhu.updateServerSettings(server, data.data.settings);
@@ -126,6 +131,7 @@ let messageDecoder = {
 	},
 	'startGame': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		if (idx == -1) return;
 		let server = game.gong_zhu.servers[idx];
 		if (server.connected.length < server.gameData.minPlayers) {
 			ws.send(JSON.stringify({
@@ -148,6 +154,7 @@ let messageDecoder = {
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		if (idx == -1) return;
 		let server = game.gong_zhu.servers[idx];
 		console.log(ws.username);
 
@@ -161,6 +168,7 @@ let messageDecoder = {
 	},
 	'sendChat': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		if (idx == -1) return;
 		let server = game.gong_zhu.servers[idx];
 		let msgTime = Date.now();
 		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'receiveChat', data: {
@@ -168,6 +176,12 @@ let messageDecoder = {
 			text: data.data,
 			time: msgTime
 		}});
+	},
+	'getGameState': (ws, data) => {
+		let idx = game.gong_zhu.getServerIdx(ws.connected);
+		if (idx == -1) return;
+		let server = game.gong_zhu.servers[idx];
+		Utils.broadcastGameState(ws, server, game.gong_zhu.obfuscateGameData);
 	}
 };
 

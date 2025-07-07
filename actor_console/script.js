@@ -22,7 +22,6 @@ function initWebSocket() {
 		});
 
 		ws.addEventListener('message', function(message) {
-			console.log(message);
 			let data = JSON.parse(message.data);
 			let tags = data.tag.split('/');
 			let func;

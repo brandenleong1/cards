@@ -2,3 +2,4 @@ node_modules/
 package-lock.json
 **notes.txt
 **/.venv/
+**/__pycache__/
