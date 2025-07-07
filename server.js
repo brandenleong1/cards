@@ -9,7 +9,7 @@ const game = {
 
 const gameUtils = require(path.resolve(__dirname, './utils/game_utils.js'));
 const commandParse = require(path.resolve(__dirname, './utils/command_parse.js'));
-const Utils = require(path.resolve(__dirname, './utils/utils.js'))
+const Utils = require(path.resolve(__dirname, './utils/utils.js'));
 
 const app = express();
 const app_port = process.env.PORT || 8080;
