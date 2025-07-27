@@ -5,19 +5,40 @@ import asyncio
 # import contextlib
 import websockets
 from websockets.asyncio.client import connect
+from websockets.asyncio.server import serve
 
 
 NUM_PLAYERS = 4
 
-async def wsJoin(url: str, ws_list: list[websockets.asyncio.client.ClientConnection | None], ws_idx: int) -> None:
+console_listeners = []
+
+def broadcast_message_to_console_listeners(message: str):
+	for ws in console_listeners:
+		asyncio.create_task(ws.send(message))
+
+
+async def ws_join(url: str, ws_list: list[websockets.asyncio.client.ClientConnection | None], ws_idx: int) -> None:
 	async with connect(url) as ws:
 		ws_list[ws_idx] = ws
+
+		broadcast_message_to_console_listeners(json.dumps({
+			'tag': 'createConsole',
+			'data': {'id': f'agent_{ws_idx}'}
+		}))
 
 		await ws.send(json.dumps({'tag': 'requestSessionID'}))
 
 		async for message in ws:
 			msg = json.loads(message)
 			print(ws_idx, msg)
+			broadcast_message_to_console_listeners(json.dumps({
+				'tag': 'receiveCommand',
+				'data': {
+					'id': f'agent_{ws_idx}',
+					'msg': [message],
+					'status': 1
+				}
+			}))
 
 			if msg['tag'] == 'receiveSessionID':
 				ws.sessionID =  msg['data']['sessionID']
@@ -63,11 +84,22 @@ async def wsJoin(url: str, ws_list: list[websockets.asyncio.client.ClientConnect
 							await ws.send(json.dumps({'tag': 'joinLobby', 'data': server}))
 							break
 
+async def console_server_handler(ws) -> None:
+	try:
+		console_listeners.append(ws)
+		await ws.wait_closed()
+	finally:
+		console_listeners.remove(ws)
+
 async def main() -> None:
 	url = 'ws://localhost:8080'
 
-	ws = [None] * NUM_PLAYERS
-	tasks = [asyncio.create_task(wsJoin(url = url, ws_list = ws, ws_idx = i)) for i in range(NUM_PLAYERS)]
+	console_server = await serve(handler = console_server_handler, host = 'localhost', port = '8000')
+
+	input('Console server started, [Enter] to continue...')
+
+	ws_list = [None] * NUM_PLAYERS
+	tasks = [asyncio.create_task(ws_join(url = url, ws_list = ws_list, ws_idx = i)) for i in range(NUM_PLAYERS)]
 
 	await asyncio.gather(*tasks)
 
