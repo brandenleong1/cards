@@ -18,7 +18,7 @@ function initWebSocket() {
 		ws = new WebSocket(url);
 
 		ws.addEventListener('open', function(e) {
-			console.log('Connected to [' + url + ']');
+			Popup.toastPopup('Connected to [' + url + ']');
 		});
 
 		ws.addEventListener('message', function(message) {
