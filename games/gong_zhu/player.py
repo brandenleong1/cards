@@ -11,6 +11,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 import numpy as np
 import itertools as it
+import torch
 
 # import environment
 
@@ -79,13 +80,92 @@ class ConsoleListeners:
 			'data': {'id': ws_name}
 		}))
 
+class FeedForwardNN(torch.nn.Module):
+	def __init__(self, module_type: str, *dims: tuple[int, ...]) -> None:
+		super().__init__()
+
+		self.network = torch.nn.Sequential(
+			*[e for dim in dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())][:-1]
+		)
+
+		if type not in {'SHOW', 'PLAY'}:
+			raise ValueError(f'Type [{type}] undefined')
+
+		self.module_type = module_type
+
+	def forward(self, state: dict[str, np.ndarray]) -> torch.Tensor:
+		inputs = FeedForwardNN.serialize_state(state)
+
+		if self.module_type == 'SHOW':
+			logits = self.network(inputs)
+			probs = torch.sigmoid(logits)
+			if self.training:
+				actions = torch.bernoulli(probs)
+			else:
+				actions = (probs > 0.5).float()
+		elif self.module_type == 'PLAY':
+			pass					# TODO
+		else:
+			return torch.empty((0,))
+
+	def calculate_action_mask(self, state: dict[str, np.ndarray]) -> torch.Tensor:
+		legal_cards = set()
+
+		game_state = [k for k, v in GAME_STATE_MAP.items() if v == np.argmax(state['game_state']).item()][0]
+		if game_state in {'SHOW_3', 'SHOW_ALL'}:
+			exposed = np.any(state['exposed'] > 1, axis = 0)
+			legal_cards.update(card for card in [11, 13, 36, 48] if not exposed[card])
+		elif game_state in {'PLAY_0'}:
+			hand = np.where(state['hand'] == 1)[0].tolist()
+			exposed = np.where(np.any(state['exposed'] > 1, axis = 0))[0].tolist()
+			hidden = set(hand) - set(exposed)
+			legal_cards.update(hidden)
+
+			my_exposed = set(hand) & set(exposed)
+			suit_lens = {}
+			for key, group in it.groupby(sorted(hand), key = lambda e: e // 13):
+				suit_lens[key] = len(list(group))
+
+			legal_cards.update(e for e in my_exposed if suit_lens[e // 13] == 1)
+		elif game_state in {'PLAY_1', 'PLAY_2', 'PLAY_3'}:
+			trick = np.where(state['leader_history'] != -1)[0][-1]
+			leader = state['leader_history'][trick]
+			trick_suit = state['play_history'][trick][leader] // 13
+
+			hand = np.where(state['hand'] == 1)[0]
+			filtered_hand = hand[hand // 13 == trick_suit]
+			if len(filtered_hand) == 1:
+				legal_cards.update(filtered_hand.tolist())
+			elif len(filtered_hand) > 1:
+				exposed = np.where(np.any(state['exposed'] > 1, axis = 0))[0].tolist()
+				hidden = set(hand.tolist()) - set(exposed)
+				legal_cards.update(hidden)
+			else:
+				legal_cards.update(hand.tolist())
+		else:
+			raise ValueError(f'Unknown game_state [{game_state}]')
+
+		out_dim = self.network[-1].out_features
+		mask = torch.zeros((out_dim,))
+
+		hand = np.where(state['hand'] == 1)[0]
+		padded_hand = np.pad(hand, (0, out_dim - len(hand)), mode = 'constant', constant = 0)
+		# TODO
+
+
+	@staticmethod
+	def serialize_state(state: dict[str, np.ndarray]) -> np.ndarray:
+		order = ['game_state', 'hand', 'scores', 'current_trick', 'collected_cards', 'exposed', 'play_history', 'leader_history']
+
+		return np.concatenate([state[k].flatten() for k in order], axis = 0)
+
 class MultiAgentEnv:
 	def __init__(self) -> None:
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
 		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None] * self.num_agents
 
 		self._latest_observation: list[dict] =										[{}] * self.num_agents
-		self._latest_state: list[np.ndarray | None] =								[None] * self.num_agents
+		self._latest_state: list[dict[str, np.ndarray] | None] =					[None] * self.num_agents
 		self._latest_action: list[np.ndarray | None] =								[None] * self.num_agents
 		self._latest_reward: list[float] =											[0.0] * self.num_agents
 		self._latest_done: list[bool] =												[False] * self.num_agents
@@ -212,7 +292,8 @@ class MultiAgentEnv:
 						'msg': [
 							f'my_idx = {GAME_SETTINGS["turn_order"].index(ws.username)}',
 							str(self._latest_observation[ws_idx]),
-							str(self._latest_state[ws_idx].shape)
+							str(FeedForwardNN.serialize_state(self._latest_state[ws_idx]).shape),
+							json.dumps(self._leader_history[ws_idx].tolist())
 						],
 						'status': 1
 					}
@@ -225,7 +306,7 @@ class MultiAgentEnv:
 						self._batch_ts[ws_idx] += 1
 						self._episode_tx[ws_idx] += 1
 
-						self._batch_states[ws_idx] = np.concatenate((self._batch_states[ws_idx], self._latest_state[ws_idx][np.newaxis, ...]), axis = 0)
+						self._batch_states[ws_idx] = np.concatenate((self._batch_states[ws_idx], FeedForwardNN.serialize_state(self._latest_state[ws_idx])[np.newaxis, ...]), axis = 0)
 						# TODO action, log_prob = get_action(self._latest_state[ws_idx])
 						# TODO batch_actions.append(action)
 						# TODO batch_log_probs.append(action)
@@ -245,8 +326,11 @@ class MultiAgentEnv:
 					}))
 					# ws.act()
 
+			elif msg['tag'] == 'receiveCommand':
+				pass		# TODO update_latest_from_console_observation
+
 	async def reset(self) -> None:
-		latest_state = self._latest_state[0]['gameState'] != ''
+		latest_state = self._latest_observation[0]['gameState'] != ''
 
 		self._latest_observation =		[{}] * self.num_agents
 		self._latest_state =			[None] * self.num_agents
@@ -265,10 +349,13 @@ class MultiAgentEnv:
 
 	def update_latest_from_gui_observation(self, observation: dict, idx: int, turn_idx: int) -> None:
 		trick: int = round(len(observation['stacks'][0]) / len(observation['turnOrder']))
-		state: dict = MultiAgentEnv.encode_observation(observation, turn_idx)
+		partial_state: dict[str, np.ndarray] = MultiAgentEnv.encode_observation(observation, turn_idx)
 
 		if observation['gameState'].startswith('PLAY_'):
 			self._leader_history[idx][trick] = observation['turnFirstIdx']
+
+		# state = np.concatenate([partial_state, self._play_history[idx].flatten(), self._leader_history[idx]], axis = 0)
+		state = partial_state | {'play_history': self._play_history[idx], 'leader_history': self._leader_history[idx]}
 
 		self._latest_observation[idx] = observation
 		self._latest_state[idx] = state
@@ -295,7 +382,7 @@ class MultiAgentEnv:
 		# get game state
 
 	@staticmethod
-	def encode_observation(observation: dict, my_idx: int) -> np.ndarray:
+	def encode_observation(observation: dict, my_idx: int) -> dict[str, np.ndarray]:
 
 		game_state: np.ndarray = one_hot_encode(
 			size = len(GAME_STATE_MAP),
@@ -325,7 +412,7 @@ class MultiAgentEnv:
 			for card in _hand[1]:
 				exposed[i, card] = values[card]
 
-		return np.concatenate([e.flatten() for e in (game_state, hand, scores, current_trick, collected_cards, exposed)], axis = 0)
+		# return np.concatenate([e.flatten() for e in (game_state, hand, scores, current_trick, collected_cards, exposed)], axis = 0)
 
 		return {
 			'game_state':		game_state,
