@@ -41,7 +41,7 @@ function sendCommand(id) {
 		let code = document.createElement('code');
 		code.innerText = '>> ' + msg;
 		consoleDiv.querySelector('.console-output').append(code);
-		ws.send(JSON.stringify({tag: 'sendCommand', id: id, data: msg}));
+		ws.send(JSON.stringify({tag: 'sendCommand', id: id, data: msg, timestamp: Date.now()}));
 		consoleDiv.querySelector('input[type=text]').value = '';
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}

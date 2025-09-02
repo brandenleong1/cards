@@ -139,13 +139,13 @@ export function removeAllSpectators(server) {
 		let ws = users.get(user.username);
 		let res = leaveServer(ws, server);
 		if (res[0]) {
-			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators kicked'}));
-			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
+			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators kicked', timestamp: Date.now()}));
+			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 			delete ws.connected;
 		}
 	});
 
-	server.connected.forEach(user => users.get(user.username).send(JSON.stringify({tag: 'showLobby', status: 1, data: server})));
+	server.connected.forEach(user => users.get(user.username).send(JSON.stringify({tag: 'showLobby', status: 1, data: server, timestamp: Date.now()})));
 }
 
 export function clearGameData(server) {
@@ -348,15 +348,24 @@ function gameOFL(server) {
 		if (!gameData.stacks[0].length && gameData.hands.every(e => !e[3].length)) {
 			gameData.turnFirstIdx = gameData.hands.findIndex(e => e[0].includes(1));
 		}
+		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
+		gameData.needToAct[gameData.turnFirstIdx + 0] = 1;
+
 		ret.push({
 			msg: 'Started Trick ' + (Math.round(gameData.stacks[0].length / 4) + 1) + '; Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] leads...',
 			toAll: true
 		});
 	} else if (state == 'PLAY_1') {
+		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
+		gameData.needToAct[gameData.turnFirstIdx + 1] = 1;
 
 	} else if (state == 'PLAY_2') {
+		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
+		gameData.needToAct[gameData.turnFirstIdx + 2] = 1;
 
 	} else if (state == 'PLAY_3') {
+		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
+		gameData.needToAct[gameData.turnFirstIdx + 3] = 1;
 
 	} else if (state == 'SCORE') {
 		gameData.scores.forEach((e, i) => {
@@ -442,14 +451,14 @@ export function processCommand(data, ws, server) {
 				if (!isSpectator || ws.username == server.host) {
 					server.gameData.gameState = '';
 					Utils.broadcastToConnected(users, server,
-						{tag: 'broadcastedMessage', data: '[' + ws.username + '] exited to lobby'}
+						{tag: 'broadcastedMessage', data: '[' + ws.username + '] exited to lobby', timestamp: Date.now()}
 					);
 					Utils.broadcastToConnected(users, server,
-						{tag: 'showLobby', status: 1, data: server}
+						{tag: 'showLobby', status: 1, data: server, timestamp: Date.now()}
 					);
 				} else {
 					let res = leaveServer(ws, server);
-					ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
+					ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 
 					if (res[0]) delete ws.connected;
 				}
@@ -476,10 +485,10 @@ export function processCommand(data, ws, server) {
 						let newTurnOrder = new Set(gameData.turnOrder);
 
 						for (let username of previousTurnOrder) {
-							if (!newTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now spectating!'}));
+							if (!newTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now spectating!', timestamp: Date.now()}));
 						}
 						for (let username of newTurnOrder) {
-							if (!previousTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now playing!'}));
+							if (!previousTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now playing!', timestamp: Date.now()}));
 						}
 					}
 
@@ -795,12 +804,12 @@ export function processCommand(data, ws, server) {
 				});
 				status = 0;
 			} else {
-				ws.send(JSON.stringify({tag: 'clearConsole'}));
+				ws.send(JSON.stringify({tag: 'clearConsole', timestamp: Date.now()}));
 			}
 			break;
 		}
 		case 'debug': {
-			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret}));
+			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret, timestamp: Date.now()}));
 			break;
 		}
 		default: {
