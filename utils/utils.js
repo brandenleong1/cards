@@ -181,7 +181,8 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 					data: {
 						gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
 						serverData: serverInfo
-					}
+					},
+					timestamp: Date.now()
 				}));
 			} else {
 				ws.send(JSON.stringify({
@@ -189,7 +190,8 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 					data: {
 						gameData: gameData,
 						serverData: serverInfo
-					}
+					},
+					timestamp: Date.now()
 				}));
 			}
 		}
@@ -209,7 +211,8 @@ export function broadcastGameState(ws, server, obfuscateFunc = null) {
 			data: {
 				gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
 				serverData: serverInfo
-			}
+			},
+			timestamp: Date.now()
 		}));
 	} else {
 		ws.send(JSON.stringify({
@@ -217,7 +220,8 @@ export function broadcastGameState(ws, server, obfuscateFunc = null) {
 			data: {
 				gameData: gameData,
 				serverData: serverInfo
-			}
+			},
+			timestamp: Date.now()
 		}));
 	}
 }

@@ -39,10 +39,10 @@ function initWebSocket() {
 		ws.addEventListener('open', function(e) {
 			if (Cookies.getCookie('sessionID')) {
 				console.log('Checking Session ID', Cookies.getCookie('sessionID'));
-				ws.send(JSON.stringify({tag: 'checkSessionID', data: Cookies.getCookie('sessionID')}));
+				ws.send(JSON.stringify({tag: 'checkSessionID', data: Cookies.getCookie('sessionID'), timestamp: Date.now()}));
 			} else {
 				console.log('Requesting new Session ID');
-				ws.send(JSON.stringify({tag: 'requestSessionID'}));
+				ws.send(JSON.stringify({tag: 'requestSessionID', timestamp: Date.now()}));
 			}
 		});
 
@@ -133,7 +133,7 @@ function submitUsername() {
 		btn.style.filter = 'brightness(0.5)';
 		btn.style.cursor = 'not-allowed';
 
-		ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
+		ws.send(JSON.stringify({tag: 'requestUsername', data: username, timestamp: Date.now()}));
 	}
 }
 
@@ -164,7 +164,7 @@ function receiveUsername(data) {
 }
 
 function getLobbies() {
-	ws.send(JSON.stringify({tag: 'getLobbies'}));
+	ws.send(JSON.stringify({tag: 'getLobbies', timestamp: Date.now()}));
 }
 
 function updateUserCount(data) {
@@ -288,7 +288,7 @@ function updateLobbies(data) {
 			popup.querySelector('.button-positive-2').onclick = function() {
 				this.onclick = null;
 				this.parentNode.parentNode.click();
-				ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
+				ws.send(JSON.stringify({tag: 'joinLobby', data: server, timestamp: Date.now()}));
 			};
 		};
 	}
@@ -307,7 +307,7 @@ function createLobby() {
 		}
 	}
 
-	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}}));
+	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}, timestamp: Date.now()}));
 }
 
 function joinLobby(data) {
@@ -315,7 +315,7 @@ function joinLobby(data) {
 		Popup.toastPopup(data.data);
 		return;
 	}
-	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data}));
+	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data, timestamp: Date.now()}));
 }
 
 function showLobby(data) {
@@ -393,7 +393,7 @@ for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings 
 				losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
 				expose3: document.querySelector('#lobby-settings-expose-3').checked,
 				zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
-				}}}));
+				}}, timestamp: Date.now()}));
 			};
 			e.disabled = false;
 		} else {
@@ -406,7 +406,7 @@ for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings 
 }
 
 function leaveLobby() {
-	ws.send(JSON.stringify({tag: 'leaveLobby'}));
+	ws.send(JSON.stringify({tag: 'leaveLobby', timestamp: Date.now()}));
 }
 
 function leftLobby(data) {
@@ -434,7 +434,7 @@ function otherLeftLobby(data) {
 }
 
 function startGame() {
-	ws.send(JSON.stringify({tag: 'startGame'}));
+	ws.send(JSON.stringify({tag: 'startGame', timestamp: Date.now()}));
 }
 
 function startedGame(data) {
@@ -453,7 +453,7 @@ function sendCommand() {
 		let code = document.createElement('code');
 		code.innerText = '>> ' + data;
 		document.querySelector('#game-console-output').append(code);
-		ws.send(JSON.stringify({tag: 'sendCommand', data: data}));
+		ws.send(JSON.stringify({tag: 'sendCommand', data: data, timestamp: Date.now()}));
 		document.querySelector('#game-console-input').value = '';
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}
@@ -474,7 +474,7 @@ function receiveCommand(data) {
 function sendChat() {
 	let data = document.querySelector('#game-chat-input').value.trim();
 	if (data) {
-		ws.send(JSON.stringify({tag: 'sendChat', data: data}));
+		ws.send(JSON.stringify({tag: 'sendChat', data: data, timestamp: Date.now()}));
 		document.querySelector('#game-chat-input').value = '';
 	}
 }

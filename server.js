@@ -37,13 +37,13 @@ let messageDecoder = {
 			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 1, data: {
 				username: ws.username,
 				sessionID: ws.sessionID
-			}}));
+			}, timestamp: Date.now()}));
 			console.log(server.name);
 			if (server) {
 				if (server.gameData.gameState == '') {
-					ws.send(JSON.stringify({tag: 'showLobby', status: 1, data: server}));
+					ws.send(JSON.stringify({tag: 'showLobby', status: 1, data: server, timestamp: Date.now()}));
 				} else {
-					Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
+					Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', timestamp: Date.now()});
 					Utils.broadcastGameStateToConnected(game.gong_zhu.users, server, game.gong_zhu.obfuscateGameData);
 				}
 			}
@@ -53,7 +53,7 @@ let messageDecoder = {
 			ws.sessionID = res;
 			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 0, data: {
 				sessionID: res
-			}}));
+			}, timestamp: Date.now()}));
 		}
 	},
 	'requestSessionID': (ws, data) => {
@@ -62,7 +62,7 @@ let messageDecoder = {
 		ws.sessionID = res;
 		ws.send(JSON.stringify({tag: 'receiveSessionID', status: 0, data: {
 			sessionID: res
-		}}));
+		}, timestamp: Date.now()}));
 	},
 	'requestUsername': (ws, data) => {
 		let res = game.gong_zhu.addUser(data.data);
@@ -70,14 +70,14 @@ let messageDecoder = {
 			ws.username = res[1];
 			game.gong_zhu.users.set(res[1], ws);
 		}
-		ws.send(JSON.stringify({tag: 'receiveUsername', status: res[0], data: res[1]}));
+		ws.send(JSON.stringify({tag: 'receiveUsername', status: res[0], data: res[1], timestamp: Date.now()}));
 	},
 	'getLobbies': (ws, data) => {
-		ws.send(JSON.stringify({tag: 'updateLobbies', data: game.gong_zhu.servers}));
+		ws.send(JSON.stringify({tag: 'updateLobbies', data: game.gong_zhu.servers, timestamp: Date.now()}));
 	},
 	'createLobby': (ws, data) => {
 		let res = game.gong_zhu.addServer(data.data);
-		ws.send(JSON.stringify({tag: 'createdLobby', status: res[0], data: res[1]}));
+		ws.send(JSON.stringify({tag: 'createdLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 	},
 	'joinLobby': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(data.data);
@@ -85,11 +85,11 @@ let messageDecoder = {
 		let server = game.gong_zhu.servers[idx];
 		let res = game.gong_zhu.joinServer(ws, data.data);
 		if (res[0] && server.gameData.gameState == '') {
-			Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'showLobby', status: res[0], data: res[1]});
+			Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'showLobby', status: res[0], data: res[1], timestamp: Date.now()});
 		} else {
-			ws.send(JSON.stringify({tag: 'showLobby', status: res[0], data: res[1]}));
+			ws.send(JSON.stringify({tag: 'showLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 			if (res[0] && server.gameData.gameState != '') {
-				ws.send(JSON.stringify({tag: 'startedGame'}));
+				ws.send(JSON.stringify({tag: 'startedGame', timestamp: Date.now()}));
 				Utils.broadcastGameState(ws, server, game.gong_zhu.obfuscateGameData);
 			}
 		}
@@ -102,15 +102,15 @@ let messageDecoder = {
 
 			let isPlayerOrHost = (ws.username == server.host) || server.gameData.turnOrder.includes(ws.username);
 			let res = game.gong_zhu.leaveServer(ws, server);
-			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
+			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 			if (res[0]) {
-				if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
-					server,
-					{tag: 'showLobby', status: res[0], data: res[1]}
+				if (server.gameData.gameState == '') Utils.broadcastToConnected(
+					game.gong_zhu.users, server,
+					{tag: 'showLobby', status: res[0], data: res[1], timestamp: Date.now()}
 				);
-				else if (isPlayerOrHost) Utils.broadcastToConnected(game.gong_zhu.users, 
-					server,
-					{tag: 'otherLeftLobby', status: res[0], data: res[1]}
+				else if (isPlayerOrHost) Utils.broadcastToConnected(
+					game.gong_zhu.users, server,
+					{tag: 'otherLeftLobby', status: res[0], data: res[1], timestamp: Date.now()}
 				);
 				delete ws.connected;
 			}
@@ -125,7 +125,7 @@ let messageDecoder = {
 		if (ws.username == server.host) {
 			let res = game.gong_zhu.updateServerSettings(server, data.data.settings);
 			if (res[0]) {
-				Utils.broadcastToConnected(game.gong_zhu.users, ws.connected, {tag: 'showLobby', status: res[0], data: res[1]});
+				Utils.broadcastToConnected(game.gong_zhu.users, ws.connected, {tag: 'showLobby', status: res[0], data: res[1], timestamp: Date.now()});
 			}
 		}
 	},
@@ -136,7 +136,8 @@ let messageDecoder = {
 		if (server.connected.length < server.gameData.minPlayers) {
 			ws.send(JSON.stringify({
 				tag: 'broadcastedMessage',
-				data: `Insufficient players ${server.connected.length} < ${server.gameData.minPlayers}`
+				data: `Insufficient players ${server.connected.length} < ${server.gameData.minPlayers}`,
+				timestamp: Date.now()
 			}));
 			return;
 		}
@@ -147,10 +148,11 @@ let messageDecoder = {
 		for (let user of server.connected) {
 			game.gong_zhu.users.get(user.username).send(JSON.stringify({
 				tag: 'broadcastedMessage',
-				data: (newTurnOrder.has(user.username) ? 'You are now playing!' : 'You are now spectating!')
+				data: (newTurnOrder.has(user.username) ? 'You are now playing!' : 'You are now spectating!'),
+				timestamp: Date.now()
 			}));
 		}
-		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame'});
+		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', timestamp: Date.now()});
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -161,7 +163,9 @@ let messageDecoder = {
 		let res = game.gong_zhu.processCommand(data.data, ws, server);
 		let resToAll = structuredClone(res);
 		resToAll.data = res.data.filter(e => e.toAll).map(e => e.msg);
+		resToAll.timestamp = Date.now();
 		res.data = res.data.map(e => e.msg);
+		res.timestamp = Date.now();
 
 		ws.send(JSON.stringify(res));
 		Utils.broadcastToConnected(game.gong_zhu.users, server, resToAll, ws.username);
@@ -175,7 +179,7 @@ let messageDecoder = {
 			username: ws.username,
 			text: data.data,
 			time: msgTime
-		}});
+		}, timestamp: Date.now()});
 	},
 	'getGameState': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -197,16 +201,16 @@ wss.on('listening', function() {
 				if (status && server) {
 					if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
 						server,
-						{tag: 'showLobby', status: 1, data: server}
+						{tag: 'showLobby', status: 1, data: server, timestamp: Date.now()}
 					);
 					else Utils.broadcastToConnected(game.gong_zhu.users, 
 						server,
-						{tag: 'otherLeftLobby', status: 1, data: server}
+						{tag: 'otherLeftLobby', status: 1, data: server, timestamp: Date.now()}
 					);
 				}
 			}
 			for (let ws of wss.clients) {
-				ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+				ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size, timestamp: Date.now()}));
 			}
 		});
 
@@ -232,7 +236,7 @@ wss.on('connection', function(ws, req) {
 	ws.active = 1;
 
 	for (let ws of wss.clients) {
-		ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size}));
+		ws.send(JSON.stringify({tag: 'updateUserCount', data: wss.clients.size, timestamp: Date.now()}));
 	}
 
 	ws.on('message', function(data, isBinary) {
