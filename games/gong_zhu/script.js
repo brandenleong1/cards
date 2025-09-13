@@ -463,7 +463,7 @@ function receiveCommand(data) {
 	let output = document.querySelector('#game-console-output');
 	console.log('receiveCommand', data);
 	for (let log of data.data) {
-		let code = document.creaeeElement('code');
+		let code = document.createElement('code');
 		if (!data.status) code.style.color = 'var(--color_red)';
 		code.textContent = log;
 		output.append(code);
