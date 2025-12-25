@@ -95,6 +95,19 @@
 	justify-content: center;
 }
 
+#game-gui-hands-self-wrapper::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	backdrop-filter: blur(8px);
+	mask: linear-gradient(to bottom, transparent, white 16px),
+			linear-gradient(to top, transparent, white 16px),
+			linear-gradient(to left, transparent, white 16px),
+			linear-gradient(to right, transparent, white 16px);
+	 mask-composite: intersect;
+}
+
 #game-gui-hands-self {
 	display: flex;
 	height: max-content;

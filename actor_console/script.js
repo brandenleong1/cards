@@ -22,7 +22,7 @@ function initWebSocket() {
 		});
 
 		ws.addEventListener('message', function(message) {
-			let data = JSON.parse(message.data);
+			let data = Utils.JSONParse(message.data);
 			let tags = data.tag.split('/');
 			let func;
 			for (let i = 0; i < tags.length; i++) {
@@ -41,7 +41,7 @@ function sendCommand(id) {
 		let code = document.createElement('code');
 		code.innerText = '>> ' + msg;
 		consoleDiv.querySelector('.console-output').append(code);
-		ws.send(JSON.stringify({tag: 'sendCommand', id: id, data: msg, timestamp: Date.now()}));
+		ws.send(Utils.JSONStringify({tag: 'sendCommand', id: id, data: msg, timestamp: Date.now()}));
 		consoleDiv.querySelector('input[type=text]').value = '';
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}

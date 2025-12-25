@@ -1,5 +1,6 @@
 node_modules/
 package-lock.json
-**notes.txt
+**/notes.txt
 **/.venv/
 **/__pycache__/
+**/*.swp

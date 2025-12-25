@@ -25,7 +25,8 @@ export const defaultSettings = {
 		losingThreshold: -1000,
 		expose3: false,
 		zhuYangManJuan: false
-	}
+	},
+	currentFrame: -1n,
 };
 
 
@@ -56,16 +57,18 @@ export function removeUser(username) {
 	users.delete(username);
 }
 
-export function addServer(data) {
-	data.connected = [];
-	data.gameData = structuredClone(defaultSettings);
-	let idx = Utils.binaryInsert(servers, data, function(a, b) {
+export function addServer(serverData) {
+	serverData.connected = [];
+	serverData.commandQueue = [];
+	serverData.processingCommand = false;
+	serverData.gameData = structuredClone(defaultSettings);
+	let idx = Utils.binaryInsert(servers, serverData, function(a, b) {
 		if (a.time != b.time) return b.time - a.time;
 		else if (a.name != b.name) return a.name.localeCompare(b.name);
 		else return a.creator.localeCompare(b.creator);
 	});
 
-	return [idx == -1 ? 0 : 1, data];
+	return [idx == -1 ? 0 : 1, serverData];
 }
 
 export function getServerIdx(serverData) {
@@ -139,13 +142,13 @@ export function removeAllSpectators(server) {
 		let ws = users.get(user.username);
 		let res = leaveServer(ws, server);
 		if (res[0]) {
-			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators kicked', timestamp: Date.now()}));
-			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
+			ws.send(Utils.JSONStringify({tag: 'broadcastedMessage', data: 'Spectators kicked', timestamp: Date.now()}));
+			ws.send(Utils.JSONStringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 			delete ws.connected;
 		}
 	});
 
-	server.connected.forEach(user => users.get(user.username).send(JSON.stringify({tag: 'showLobby', status: 1, data: server, timestamp: Date.now()})));
+	server.connected.forEach(user => users.get(user.username).send(Utils.JSONStringify({tag: 'showLobby', status: 1, data: server, timestamp: Date.now()})));
 }
 
 export function clearGameData(server) {
@@ -253,6 +256,9 @@ function generateTurnOrder(server) {
 
 export function initGame(server) {
 	clearGameData(server);
+	server.commandQueue = [];
+	server.processingCommand = false;
+
 	let gameData = server.gameData;
 
 	for (let i = 0; i < gameData.numDecks; i++) {
@@ -273,6 +279,7 @@ export function initGame(server) {
 	gameData.gameState = 'LEADERBOARD';
 	gameData.round = 0;
 	gameData.turnFirstIdx = 0;
+	gameData.currentFrame = 0n;
 
 	gameOFL(server);
 }
@@ -313,6 +320,7 @@ function gameNSL(server) {
 		}
 	}
 
+	server.gameData.currentFrame++;
 	return gameOFL(server);
 }
 
@@ -349,7 +357,7 @@ function gameOFL(server) {
 			gameData.turnFirstIdx = gameData.hands.findIndex(e => e[0].includes(1));
 		}
 		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
-		gameData.needToAct[gameData.turnFirstIdx + 0] = 1;
+		gameData.needToAct[(gameData.turnFirstIdx + 0) % gameData.turnOrder.length] = 1;
 
 		ret.push({
 			msg: 'Started Trick ' + (Math.round(gameData.stacks[0].length / 4) + 1) + '; Player [' + gameData.turnOrder[gameData.turnFirstIdx] + '] leads...',
@@ -357,15 +365,15 @@ function gameOFL(server) {
 		});
 	} else if (state == 'PLAY_1') {
 		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
-		gameData.needToAct[gameData.turnFirstIdx + 1] = 1;
+		gameData.needToAct[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length] = 1;
 
 	} else if (state == 'PLAY_2') {
 		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
-		gameData.needToAct[gameData.turnFirstIdx + 2] = 1;
+		gameData.needToAct[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length] = 1;
 
 	} else if (state == 'PLAY_3') {
 		for (let i = 0; i < gameData.turnOrder.length; i++) gameData.needToAct[i] = 0;
-		gameData.needToAct[gameData.turnFirstIdx + 3] = 1;
+		gameData.needToAct[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length] = 1;
 
 	} else if (state == 'SCORE') {
 		gameData.scores.forEach((e, i) => {
@@ -387,6 +395,43 @@ function gameOFL(server) {
 
 	Utils.broadcastGameStateToConnected(users, server, obfuscateGameData);
 	return ret;
+}
+
+export function enqueueCommand(data, ws, server) {
+	server.commandQueue.push([data, ws]);
+	processNextCommand(server);
+	console.log('enqueueCommand: ', data);
+}
+
+export function processNextCommand(server) {
+	if (server.processingCommand) return;
+
+	server.processingCommand = true;
+
+	while (server.commandQueue.length) {
+		let [data, ws] = server.commandQueue.shift();
+
+		console.log(data.currentFrame, server.gameData.currentFrame, data.currentFrame == server.gameData.currentFrame);
+		if (data.currentFrame != server.gameData.currentFrame) {
+			ws.send(Utils.JSONStringify({tag: 'commandNACK', data: {command: data.data, oldFrame: data.currentFrame, newFrame: server.gameData.currentFrame}, timestamp: Date.now()}));
+			continue;
+		}
+
+		console.log(server.gameData.currentFrame, data.currentFrame, server.commandQueue.map(e => [e[0], e[1].username]));
+
+		let res = processCommand(data.data, ws, server);
+		let resToAll = structuredClone(res);
+		resToAll.data = res.data.filter(e => e.toAll).map(e => e.msg);
+		resToAll.timestamp = Date.now();
+		res.data = res.data.map(e => e.msg);
+		res.timestamp = Date.now();
+
+		ws.send(Utils.JSONStringify({tag: 'commandACK', data: {command: data.data, oldFrame: data.currentFrame, newFrame: server.gameData.currentFrame}, timestamp: Date.now()}));
+
+		ws.send(Utils.JSONStringify(res));
+		Utils.broadcastToConnected(users, server, resToAll, ws.username);
+	}
+	server.processingCommand = false;
 }
 
 export function processCommand(data, ws, server) {
@@ -458,7 +503,7 @@ export function processCommand(data, ws, server) {
 					);
 				} else {
 					let res = leaveServer(ws, server);
-					ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
+					ws.send(Utils.JSONStringify({tag: 'leftLobby', status: res[0], data: res[1], timestamp: Date.now()}));
 
 					if (res[0]) delete ws.connected;
 				}
@@ -485,10 +530,10 @@ export function processCommand(data, ws, server) {
 						let newTurnOrder = new Set(gameData.turnOrder);
 
 						for (let username of previousTurnOrder) {
-							if (!newTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now spectating!', timestamp: Date.now()}));
+							if (!newTurnOrder.has(username)) users.get(username).send(Utils.JSONStringify({tag: 'broadcastedMessage', data: 'You are now spectating!', timestamp: Date.now()}));
 						}
 						for (let username of newTurnOrder) {
-							if (!previousTurnOrder.has(username)) users.get(username).send(JSON.stringify({tag: 'broadcastedMessage', data: 'You are now playing!', timestamp: Date.now()}));
+							if (!previousTurnOrder.has(username)) users.get(username).send(Utils.JSONStringify({tag: 'broadcastedMessage', data: 'You are now playing!', timestamp: Date.now()}));
 						}
 					}
 
@@ -665,6 +710,8 @@ export function processCommand(data, ws, server) {
 							});
 						}
 					}
+
+					// server.gameData.currentFrame++;
 				} else {
 					if (args.length != 1) {
 						ret.push({
@@ -804,12 +851,12 @@ export function processCommand(data, ws, server) {
 				});
 				status = 0;
 			} else {
-				ws.send(JSON.stringify({tag: 'clearConsole', timestamp: Date.now()}));
+				ws.send(Utils.JSONStringify({tag: 'clearConsole', timestamp: Date.now()}));
 			}
 			break;
 		}
 		case 'debug': {
-			ws.send(JSON.stringify({tag: 'toggleDebug', data: ret, timestamp: Date.now()}));
+			ws.send(Utils.JSONStringify({tag: 'toggleDebug', data: ret, timestamp: Date.now()}));
 			break;
 		}
 		default: {
@@ -867,6 +914,7 @@ function scoreFromCards(cardArr, server) {
 }
 
 export function obfuscateGameData(gameData, turnOrderIdx) {
+	return gameData
 	let gameDataCopy = structuredClone(gameData);
 
 	Utils.nullify(gameDataCopy.decks);
