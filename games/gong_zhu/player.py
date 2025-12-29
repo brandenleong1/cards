@@ -108,11 +108,11 @@ class ActorNN(torch.nn.Module):
 
 		self.module_type = module_type
 
-	def forward(self, batch: list[dict[str, np.ndarray]]) -> tuple[torch.Tensor, torch.Tensor]:
-		inputs = torch.tensor([ActorNN.serialize_state(state) for state in batch])
+	def forward(self, inputs: torch.Tensor, mask: torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+		# inputs.shape:	(B, dim(obs))
+		# mask.shape:	(B, dim(act))
 
 		logits = self.network(inputs)
-		mask = torch.tensor([self.calculate_action_mask(state) for state in batch])
 
 		if self.module_type == 'SHOW':
 			masked_logits = logits.masked_fill(mask == 0, torch.tensor(-torch.inf))
@@ -132,10 +132,12 @@ class ActorNN(torch.nn.Module):
 		elif self.module_type == 'PLAY':
 			masked_logits = logits.masked_fill(mask == 0, torch.tensor(-torch.inf))
 			probs = torch.softmax(masked_logits, dim = -1)
+
 			if self.training:
 				action = torch.multinomial(probs, num_samples = 1).squeeze(-1)
 			else:
 				action = torch.argmax(probs, dim = -1)
+
 			log_probs = torch.log(probs.gather(-1, action.unsqueeze(-1)).squeeze(-1))
 			actions = F.one_hot(action, num_classes = logits.shape[-1]).float()
 		else:
@@ -147,9 +149,11 @@ class ActorNN(torch.nn.Module):
 		legal_cards = set()
 
 		game_state = [k for k, v in GAME_STATE_MAP.items() if v == np.argmax(state['game_state']).item()][0]
+
 		if game_state in {'SHOW_3', 'SHOW_ALL'}:
 			exposed = np.any(state['exposed'] > 1, axis = 0)
 			legal_cards.update(card for card in [11, 13, 36, 48] if not exposed[card])
+
 		elif game_state in {'PLAY_0'}:
 			hand = np.where(state['hand'] == 1)[0].tolist()
 			exposed = np.where(np.any(state['exposed'] > 1, axis = 0))[0].tolist()
@@ -162,6 +166,7 @@ class ActorNN(torch.nn.Module):
 				suit_lens[key] = len(list(group))
 
 			legal_cards.update(e for e in my_exposed if suit_lens[e // 13] == 1)
+
 		elif game_state in {'PLAY_1', 'PLAY_2', 'PLAY_3'}:
 			trick = np.where(state['leader_history'] != -1)[0][-1]
 			leader = state['leader_history'][trick]
@@ -169,6 +174,7 @@ class ActorNN(torch.nn.Module):
 
 			hand = np.where(state['hand'] == 1)[0]
 			filtered_hand = hand[hand // 13 == trick_suit]
+
 			if len(filtered_hand) == 1:
 				legal_cards.update(filtered_hand.tolist())
 			elif len(filtered_hand) > 1:
@@ -177,6 +183,7 @@ class ActorNN(torch.nn.Module):
 				legal_cards.update(hidden)
 			else:
 				legal_cards.update(hand.tolist())
+
 		else:
 			raise ValueError(f'Unknown game_state [{game_state}]')
 
@@ -189,9 +196,9 @@ class ActorNN(torch.nn.Module):
 		return padded_hand
 
 	def evaluate_actions(self, states: torch.Tensor, actions: torch.Tensor, masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-		# states.shape:		(B, state_dim)
-		# actions.shape:	(B, action_dim)
-		# masks.shape:		(B, action_dim)
+		# states.shape:		(B, dim(obs))
+		# actions.shape:	(B, dim(act))
+		# masks.shape:		(B, dim(act))
 
 		logits = self.network(states)
 
@@ -230,6 +237,15 @@ class ActorNN(torch.nn.Module):
 
 		return np.concatenate([state[k].flatten() for k in order], axis = 0)
 
+	@staticmethod
+	def get_module_type_from_game_state(game_state: str) -> str:
+		if game_state.startswith('SHOW'):
+			return 'SHOW'
+		elif game_state.startswith('PLAY'):
+			return 'PLAY'
+		else:
+			raise ''
+
 class CriticNN(torch.nn.Module):
 	def __init__(self, dims: tuple[int, ...]) -> None:
 		super().__init__()
@@ -239,10 +255,10 @@ class CriticNN(torch.nn.Module):
 			torch.nn.LazyLinear(1)
 		)
 
-	def forward(self, batch: torch.Tensor) -> torch.Tensor:
-		# batch.shape: (B, state_dim)
+	def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+		# inputs.shape: (B, dim(obs))
 		# return.shape: (B,)
-		return self.network(batch).squeeze(-1)
+		return self.network(inputs).squeeze(-1)
 
 
 class MultiAgentEnv:
@@ -276,9 +292,9 @@ class MultiAgentEnv:
 		self._batch_ts: list[int] =										[-1						for _ in range(self.num_agents)]
 		self._batch_states: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(obs))
 		self._batch_actions: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(act))
+		self._batch_action_masks: list[torch.Tensor] =					[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(act))
 		self._batch_log_probs: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B,)
 		self._batch_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_agents)]	# (E, t_per_E)
-		self._batch_reward_to_gos: list[np.ndarray | None] =			[None					for _ in range(self.num_agents)]	# (t_per_B,)
 		self._batch_lens: list[np.ndarray | None] =						[np.empty(0)			for _ in range(self.num_agents)]	# (E,)
 
 		self._episode_ts: list[int] =									[-1						for _ in range(self.num_agents)]
@@ -572,25 +588,29 @@ class MultiAgentEnv:
 						return
 
 					with torch.no_grad():
-						if self._latest_observation[ws_idx]['gameState'].startswith('SHOW'):
-							actions, log_probs = self.actor['SHOW']([self._latest_state[ws_idx]])
-						elif self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
-							actions, log_probs = self.actor['PLAY']([self._latest_state[ws_idx]])
-						else:
+						actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
+
+						if actor_module_type == '':
 							await self.unlock_processing_event(ws_idx)
 							return
 
-					console_listeners.broadcast_message(json.dumps({
-						'tag': 'receiveCommand',
-						'data': {
-							'id': console_listeners.idx_to_name[ws_idx],
-							'msg': [f'=== actions | log_probs ({self._latest_observation[ws_idx]["gameState"]}) ===\n' + json.dumps(actions.tolist()) + '\n' + json.dumps(log_probs.tolist())],
-							'status': 1
-						}
-					}))
+						inputs = torch.tensor([ActorNN.serialize_state(self._latest_state[ws_idx])])
+						mask = torch.tensor([self.actor[actor_module_type].calculate_action_mask(state) for state in batch])
 
-					self._batch_actions[ws_idx] = torch.concatenate((self._batch_actions[ws_idx], actions), dim = 0)
-					self._batch_log_probs[ws_idx] = torch.concatenate((self._batch_log_probs[ws_idx], log_probs), dim = 0)
+						actions, log_probs = self.actor[actor_module_type](inputs, mask)
+
+						console_listeners.broadcast_message(json.dumps({
+							'tag': 'receiveCommand',
+							'data': {
+								'id': console_listeners.idx_to_name[ws_idx],
+								'msg': [f'=== actions | log_probs ({self._latest_observation[ws_idx]["gameState"]}) ===\n' + json.dumps(actions.tolist()) + '\n' + json.dumps(log_probs.tolist())],
+								'status': 1
+							}
+						}))
+
+						self._batch_actions[ws_idx] = torch.concatenate((self._batch_actions[ws_idx], actions), dim = 0)
+						self._batch_action_masks[ws_idx] = torch.concatenate((self._batch_action_masks[ws_idx], mask), dim = 0)
+						self._batch_log_probs[ws_idx] = torch.concatenate((self._batch_log_probs[ws_idx], log_probs), dim = 0)
 
 					await asyncio.sleep(0.5)
 					await self.act(actions[0], ws_idx, turn_idx)
@@ -690,14 +710,6 @@ class MultiAgentEnv:
 		else:
 			await self.ws_list[0].send(json.dumps({'tag': 'startGame', 'timestamp': int(time.time() * 1000)}))
 
-	def train_post_rollout(self) -> None:
-		# Compute reward-to-gos
-		# Compute advantage estimates
-		# Update policy by maximizing PPO-Clip objective
-		# Fit value function by regression on MSE
-
-		pass	# TODO
-
 	async def act(self, action: torch.Tensor, ws_idx: int, turn_idx: int) -> None:
 		commands = []
 		if self._latest_observation[ws_idx]['gameState'].startswith('SHOW'):
@@ -796,46 +808,119 @@ class MultiAgentEnv:
 	def get_reward_from_state_transition(old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
 		return MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
 
-	def compute_gae(self, ws_idx: int) -> tuple[np.ndarray, np.ndarray]:
-		all_advantages: list = []
-		all_returns: list = []
+	def train_post_rollout(self) -> None:
+		batch_reward_to_gos =				compute_reward_to_gos()		# (B,)
+		batch_advantages, batch_returns =	compute_gaes()				# (B,), (B,)
 
-		num_episodes = len(self._batch_rewards[ws_idx])
+		batch_states =			torch.concatenate(self._batch_states, dim = 0)			# (B, dim(obs))
+		batch_actions =			torch.concatenate(self._batch_actions, dim = 0)			# (B, dim(act))
+		batch_action_masks =	torch.concatenate(self._batch_action_masks, dim = 0)	# (B, dim(act))
+		batch_log_probs =		torch.concatenate(self._batch_log_probs, dim = 0)		# (B,)
+		batch_reward_to_gos =	torch.concatenate(self._batch_reward_to_gos, dim = 0)	# (B,)
 
-		for episode_idx in range(num_episodes):
-			rewards = self._batch_rewards[ws_idx][episode_idx]
-			values = self._batch_values[ws_idx][episode_idx]
+		game_states = batch_states[:, :len(GAME_STATE_MAP)]
+		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
+		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
 
-			episode_len = rewards.shape[0]
-			if episode_len == 0:
-				continue
+		eps = 1e-9
+		batch_advantages = (batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + eps)
 
-			advantages = np.zeros(episode_len, dtype = np.float32)
+		actor_optimizer =	torch.optim.Adam(self.actor.parameters,		lr = self.lr)
+		critic_optimizer =	torch.optim.Adam(self.critic.parameters,	lr = self.lr)
 
-			next_value = 0.0
-			next_gae = 0.0
+		batch_len = batch_states.shape[0]
 
-			for t in reversed(range(episode_len)):
-				if t == episode_len - 1:
-					next_val = next_value
-				else:
-					next_val = values[t + 1]
+		for update_idx in range(self.n_updates_per_batch):
+			batch_log_probs_new = torch.zeros(batch_len)
+			batch_entropy = torch.tensor(0.0)
 
-				delta = rewards[t] + self.gamma * next_val - values[t]
-				last_gae = delta + self.gamma * self.gae_lambda * last_gae
-				advantages[t] = last_gae
+			if mask_show_state.any():
+				show_log_probs, show_entropy = self.actor['SHOW'].evaluate_actions(
+					batch_states, batch_actions, batch_action_masks
+				)
+				batch_log_probs_new[show_mask] = show_log_probs
+				batch_entropy += show_entropy
 
-			returns = advantages + values
+			if mask_play_state.any():
+				play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
+					batch_states, batch_actions, batch_action_masks
+				)
+				batch_log_probs_new[play_mask] = play_log_probs
+				batch_entropy += play_entropy
 
-			all_advantages.append(advantages)
-			all_returns.append(returns)
+			ratios = torch.exp(batch_log_probs_new - batch_log_probs.detatch())
 
-		if len(all_advantages) == 0:
-			return np.array([], dtype = np.float32), np.array([], dtype = np.float32)
+			partial_min_1 = ratios * batch_advantages
+			partial_min_2 = torch.clamp(ratios, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * batch_advantages
 
-		return np.concatenate(all_advantages), np.concatenate(all_returns)
+			actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * batch_entropy
 
-	def compute_reward_to_gos(self) -> None:
+			batch_values_new = self.critic(batch_states)
+			critic_loss = F.mse_loss(batch_values_new, batch_returns)
+
+			actor_optimizer.zero_grad()
+			actor_loss.backward()
+			torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+			actor_optimizer.step()
+
+			critic_optimizer.zero_grad()
+			critic_loss.backward()
+			torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+			critic_optimizer.step()
+
+		print(f'Training Complete:')
+		print(f'  Total Samples: {batch_len}')
+		print(f'  Actor Loss: {actor_loss.item():.4f}')
+		print(f'  Critic Loss: {critic_loss.item():.4f}')
+		print(f'  Mean Advantage: {batch_advantages.mean().item():.4f}')
+		print(f'  Mean Return: {batch_returns.mean().item():.4f}')
+
+	def compute_gaes(self) -> tuple[torch.Tensor, torch.Tensor]:
+		all_advantages = []
+		all_returns = []
+
+		for ws_idx in range(self.num_agents):
+			batch_advantages = []
+			batch_returns = []
+
+			with torch.no_grad():
+				batch_values = self.critic(self._batch_states[ws_idx]).numpy()
+
+			value_idx = 0
+			for episode_idx, episode_rewards in enumerate(self._batch_rewards[ws_idx]):
+				episode_len = episode_rewards.shape[0]
+				if episode_len == 0:
+					continue
+
+				episode_values = batch_values[value_idx : (value_idx + episode_len)]
+				value_idx += episode_len
+
+				episode_advantages = np.zeros(episode_len, dtype = np.float32)
+				last_gae = 0.0
+
+				for t in reversed(range(episode_len)):
+					if t == episode_len - 1:
+						next_val = 0.0
+					else:
+						next_val = values[t + 1]
+
+					delta = episode_rewards[t] + self.gamma * next_val - episode_values[t]
+					last_gae = delta + self.gamma * self.gae_lambda * last_gae
+					episode_advantages[t] = last_gae
+
+				episode_returns = episode_advantages + episode_values
+
+				batch_advantages.append(episode_advantages)
+				batch_returns.append(episode_returns)
+
+			all_advantages.append(np.concatenate(batch_advantages))
+			all_returns.append(np.concatenate(batch_returns))
+
+		return torch.concatenate(all_advantages, dim = 0), torch.concatenate(all_returns, dim = 0)
+
+	def compute_reward_to_gos(self) -> torch.Tensor:
+		all_reward_to_gos = []
+
 		for ws_idx in range(self.num_agents):
 			batch_rewards = self._batch_rewards[ws_idx]
 			batch_reward_to_gos = []
@@ -850,7 +935,9 @@ class MultiAgentEnv:
 
 				batch_reward_to_gos.extend(reversed(episode_reward_to_gos))
 
-			self._batch_reward_to_gos[ws_idx] = np.array(batch_reward_to_gos)
+			all_reward_to_gos.append(batch_reward_to_gos)
+
+		return torch.concatenate(all_reward_to_gos, dim = 0)
 
 	def evaluate(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 		batch_size = batch_states.shape[0]
