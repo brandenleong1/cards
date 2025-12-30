@@ -100,11 +100,11 @@ let messageDecoder = {
 			let res = game.gong_zhu.leaveServer(ws, server);
 			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
 			if (res[0]) {
-				if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+				if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users,
 					server,
 					{tag: 'showLobby', status: res[0], data: res[1]}
 				);
-				else if (isPlayerOrHost) Utils.broadcastToConnected(game.gong_zhu.users, 
+				else if (isPlayerOrHost) Utils.broadcastToConnected(game.gong_zhu.users,
 					server,
 					{tag: 'otherLeftLobby', status: res[0], data: res[1]}
 				);
@@ -181,11 +181,11 @@ wss.on('listening', function() {
 			if (ws.connected) {
 				let [status, server] = game.gong_zhu.leaveServer(ws, ws.connected);
 				if (status && server) {
-					if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users, 
+					if (server.gameData.gameState == '') Utils.broadcastToConnected(game.gong_zhu.users,
 						server,
 						{tag: 'showLobby', status: 1, data: server}
 					);
-					else Utils.broadcastToConnected(game.gong_zhu.users, 
+					else Utils.broadcastToConnected(game.gong_zhu.users,
 						server,
 						{tag: 'otherLeftLobby', status: 1, data: server}
 					);
@@ -256,4 +256,6 @@ wss.on('connection', function(ws, req) {
 	});
 });
 
-server.listen(app_port);
+server.listen(app_port, '0.0.0.0', function() {
+	console.log(`Server running on port [${app_port}]`);
+});
