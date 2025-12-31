@@ -38,8 +38,8 @@ let messageDecoder = {
 				username: ws.username,
 				sessionID: ws.sessionID
 			}}));
-			console.log(server.name);
 			if (server) {
+				console.log(server.name);
 				if (server.gameData.gameState == '') {
 					ws.send(JSON.stringify({tag: 'showLobby', status: 1, data: server}));
 				} else {
@@ -48,7 +48,9 @@ let messageDecoder = {
 				}
 			}
 		} else {
-			let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
+			let activeSessionIDs = Array.from(wss.clients).map(ws => ws.sessionID);
+			let archivedSessionIDs = Array.from(wssClientsArchive.keys()).map(key => JSON.parse(key).sessionID);
+			let sessionIDs = new Set([...activeSessionIDs, ...archivedSessionIDs]);
 			let res = Utils.generateSessionID(sessionIDs);
 			ws.sessionID = res;
 			ws.send(JSON.stringify({tag: 'receiveSessionID', status: 0, data: {
