@@ -481,7 +481,8 @@ function sendChat() {
 
 function receiveChat(data) {
 	let output = document.querySelector('#game-chat-output');
-	let isAtBottom = !Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight);
+	let scrollThreshold = 5;
+	let isAtBottom = Math.floor(output.scrollHeight - output.scrollTop - output.clientHeight) <= scrollThreshold;
 
 	let div = document.createElement('div');
 	let span1 = document.createElement('span');
@@ -534,7 +535,7 @@ async function drawGUI(data) { // TODO animation
 
 	// Show proper frame
 	if (
-		gameData.gameState == 'LEADERBOARD' || 
+		gameData.gameState == 'LEADERBOARD' ||
 		gameData.gameState == 'SCORE'
 	) {
 		document.querySelector('#game-gui-frame-game').style.display = 'none';
