@@ -14,6 +14,7 @@ import numpy as np
 import itertools as it
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from typing import Any
 
@@ -108,7 +109,7 @@ class ActorNN(torch.nn.Module):
 
 		self.module_type = module_type
 
-	def forward(self, inputs: torch.Tensor, mask: torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+	def forward(self, inputs: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 		# inputs.shape:	(B, dim(obs))
 		# mask.shape:	(B, dim(act))
 
@@ -205,25 +206,33 @@ class ActorNN(torch.nn.Module):
 		eps = 1e-9
 
 		if self.module_type == 'SHOW':
+			num_valid = masks.sum(dim = -1).clamp(min = 1)
+
 			masked_logits = logits.masked_fill(masks == 0, torch.tensor(-torch.inf))
 			probs = torch.sigmoid(masked_logits)
+			probs = torch.clamp(probs, eps, 1 - eps)
 
 			log_probs_bits = actions * torch.log(probs + eps) + (1 - actions) * torch.log(1 - probs + eps)
+			log_probs_bits = log_probs_bits * masks
 			log_probs = log_probs_bits.sum(dim = -1)
 
 			valid_probs = probs * masks
 			entropy_bits = -(valid_probs * torch.log(probs + eps) + (1 - valid_probs) * torch.log(1 - probs + eps))
-			entropy = (entropy_bits * masks).sum(dim = -1).mean()
+			entropy_bits = entropy_bits * masks
+			entropy = (entropy_bits.sum(dim = -1) / num_valid).mean()
 
 		elif self.module_type == 'PLAY':
 			masked_logits = logits.masked_fill(masks == 0, torch.tensor(-torch.inf))
 			probs = torch.softmax(masked_logits, dim = -1)
+			probs = torch.clamp(probs, eps, 1 - eps)
 
 			action_indices = actions.argmax(dim = -1)
 
 			log_probs = torch.log(probs.gather(-1, action_indices.unsqueeze(-1)).squeeze(-1) + eps)
 
-			entropy = -(probs * torch.log(probs)).sum(dim = -1).mean()
+			valid_probs = probs * masks
+			valid_probs = valid_probs / valid_probs.sum(dim = -1, keepdim = True).clamp(min = eps)
+			entropy = -(valid_probs * torch.log(valid_probs + eps)).sum(dim = -1).mean()
 		else:
 			return torch.zeros(states.shape[0]), torch.tensor(0.0)
 
@@ -244,7 +253,7 @@ class ActorNN(torch.nn.Module):
 		elif game_state.startswith('PLAY'):
 			return 'PLAY'
 		else:
-			raise ''
+			raise ValueError(f'Unknown game_state [{game_state}]')
 
 class CriticNN(torch.nn.Module):
 	def __init__(self, dims: tuple[int, ...]) -> None:
@@ -266,19 +275,25 @@ class MultiAgentEnv:
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
 		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None	for _ in range(self.num_agents)]
 
+		self.is_waiting_for_spectator: bool =										False
+		self.batch_num: int =														0
+
+		self._is_processing_event: list[bool] =							[False					for _ in range(self.num_agents)]
+		self._event_queue: list[list[tuple[str, float]]] =				[list()					for _ in range(self.num_agents)]	# (message, timestamp)
+
 		self.reset()
 
 		self.actor = torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (64, 64, 13)),
-			'PLAY': ActorNN('PLAY', (64, 64, 13))
+			'SHOW': ActorNN('SHOW', (128, 128, 13)),
+			'PLAY': ActorNN('PLAY', (128, 128, 13))
 		})
-		self.critic = CriticNN((64, 64))
+		self.critic = CriticNN((128, 128))
 
 		self._init_hyperparameters()
 
 	def reset(self) -> None:
+		self.is_rollout: bool =											False
 		self.is_training: bool =										False
-		self.reset_timestamp: float =									time.time()
 
 		self._latest_observation: list[dict | None] =					[None					for _ in range(self.num_agents)]
 		self._latest_state: list[dict[str, np.ndarray] | None] =		[None					for _ in range(self.num_agents)]
@@ -286,8 +301,8 @@ class MultiAgentEnv:
 		self._latest_reward: list[float | None] =						[None					for _ in range(self.num_agents)]
 		self._latest_done: list[bool] =									[False					for _ in range(self.num_agents)]
 
-		self._play_history: list[np.ndarray[np.int8]] =					[np.zeros((13, NUM_PLAYERS), dtype = np.int8) - 1	for _ in range(self.num_agents)]
-		self._leader_history: list[np.ndarray[np.int8]] =				[np.zeros((13,), dtype = np.int8) - 1				for _ in range(self.num_agents)]
+		self._play_history: list[np.ndarray[np.int8]] =					[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
+		self._leader_history: list[np.ndarray[np.int8]] =				[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
 
 		self._batch_ts: list[int] =										[-1						for _ in range(self.num_agents)]
 		self._batch_states: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(obs))
@@ -300,9 +315,7 @@ class MultiAgentEnv:
 		self._episode_ts: list[int] =									[-1						for _ in range(self.num_agents)]
 		self._episode_rewards: list[np.ndarray] =						[np.empty(0)			for _ in range(self.num_agents)]	# (t_per_E,)
 
-		self._is_processing_event: list[bool] =							[False					for _ in range(self.num_agents)]
-		self._event_queue: list[list[tuple[str, float]]] =				[list()					for _ in range(self.num_agents)]	# (message, timestamp)
-		self._event_queue_last_clear: list[float] =						[self.reset_timestamp	for _ in range(self.num_agents)]
+		self._rollout_progressbar: tqdm | None =						None
 
 	def _init_hyperparameters(self) -> None:
 		self.timesteps_per_batch: int =				256
@@ -312,8 +325,10 @@ class MultiAgentEnv:
 		self.gamma: float =							0.99
 		self.gae_lambda: float =					0.95
 		self.clip_epsilon: float =					0.2
-		self.n_updates_per_batch: int =				5
-		self.lr: float =							3e-4
+		self.n_updates_per_batch: int =				10
+		self.mini_batch_size: int =					64
+		self.actor_lr: float =						1e-4
+		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
 
@@ -356,7 +371,7 @@ class MultiAgentEnv:
 		self._is_processing_event[ws_idx] = True
 
 		msg = json.loads(message, object_hook = json_parser)
-		print(ws_idx, msg)
+		# print(ws_idx, msg)
 
 		if msg['tag'] == 'receiveSessionID':
 			ws.sessionID =  msg['data']['sessionID']
@@ -380,6 +395,8 @@ class MultiAgentEnv:
 			await ws.send(json.dumps({'tag': 'joinLobby', 'data': msg['data'], 'timestamp': int(time.time() * 1000)}))
 
 		elif msg['tag'] == 'showLobby':
+			self._latest_observation[ws_idx] = None
+			self._latest_state[ws_idx] = None
 
 			if not hasattr(ws, 'connected'):
 				ws.connected = True
@@ -406,16 +423,48 @@ class MultiAgentEnv:
 							'timestamp': int(time.time() * 1000)
 						}))
 
+					await self.unlock_processing_event(ws_idx)
+
+					while not all(hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected for i in range(self.num_agents)):
+						await asyncio.sleep(0.1)
+
+					self.is_waiting_for_spectator = True
+
+					loop = asyncio.get_running_loop()
+					await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
+
+					self.is_waiting_for_spectator = False
+					await self.train()
+					return
+
 			else:
+				# print(f'showLobby: {ws_idx = } | {self.is_rollout = } | {self.is_waiting_for_spectator = }')
 				if ws_idx == 0:
 					if len(msg['data']['connected']) == GAME_SETTINGS['NUM_PLAYERS']:
-						if self.is_training:
+						if self.is_rollout:
 							await ws.send(json.dumps({
 								'tag': 'startGame',
 								'timestamp': int(time.time() * 1000)
 							}))
+
+						elif self.is_training:
+							pass
+
+						elif self.is_waiting_for_spectator:
+							pass
+
 						else:
+							self.is_waiting_for_spectator = True
+
+							await self.unlock_processing_event(ws_idx)
+
+							loop = asyncio.get_running_loop()
+							await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
+
+							self.is_waiting_for_spectator = False
 							await self.train()		# can change this later
+
+			await self.unlock_processing_event(ws_idx)
 
 		elif msg['tag'] == 'updateLobbies':
 			if not hasattr(ws, 'connected'):
@@ -434,8 +483,8 @@ class MultiAgentEnv:
 
 		elif msg['tag'] == 'updateGUI':
 
-			# No Longer Training
-			if not self.is_training:
+			# No Longer Collecting Data
+			if not self.is_rollout:
 				await self.unlock_processing_event(ws_idx)
 				return
 
@@ -465,42 +514,92 @@ class MultiAgentEnv:
 				return
 
 			# Reward Calculation
-			frame_advanced = (
-				prev_observation is not None and
-				msg['data']['gameData']['currentFrame'] > prev_observation['currentFrame'] and
-				found_matching_command
-			)
-
-			reward = None
-			if prev_state is not None and frame_advanced:
+			if prev_state is not None and len(self._episode_rewards[ws_idx]) > 0:
 				reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
-				self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([reward])), axis = 0)
+
+				self._episode_rewards[ws_idx][-1] += reward
+
+				console_listeners.broadcast_message(json.dumps({
+					'tag': 'receiveCommand',
+					'data': {
+						'id': console_listeners.idx_to_name[ws_idx],
+						'msg': ['=== reward ===\n' + f'Transition Reward [{reward}]\nCumulative Reward [{self._episode_rewards[ws_idx][-1]}]'],
+						'status': 1
+					}
+				}))
+
+			# frame_advanced = (
+			# 	prev_observation is not None and
+			# 	msg['data']['gameData']['currentFrame'] > prev_observation['currentFrame'] and
+			# 	found_matching_command
+			# )
+
+			# reward = None
+
+			# if prev_state is not None and frame_advanced:
+			# 	reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
+			# 	self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([reward])), axis = 0)
+
+			# if prev_state is not None and not frame_advanced:
+			# 	reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
+
+			# 	if len(self._episode_rewards[ws_idx]) > 0:
+			# 		self._episode_rewards[ws_idx][-1] += reward
+			# 	else:
+			# 		self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([reward])), axis = 0)
 
 			# Episode Completion + Reset
 			game_state = self._latest_observation[ws_idx]['gameState']
 			done = game_state in {'LEADERBOARD', 'SCORE'}
 
-			if (done or (self._episode_ts[ws_idx] >= self.max_timesteps_per_episode)) and self._episode_ts[ws_idx] >= 0:
+			if (done or (self._episode_ts[ws_idx] >= self.max_timesteps_per_episode)) and self._episode_ts[ws_idx] > 0:
 				self.end_episode(ws_idx)
 
-			if ws_idx == 0 and msg['data']['gameData']['gameState'] == 'LEADERBOARD':
-				await ws.send(json.dumps({
-					'tag': 'sendCommand',
-					'data': 'DEAL',
-					'timestamp': int(time.time() * 1000),
-					'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-				}))
+			if done:
+				if ws_idx == 0 and self.is_rollout:
+					self._play_history =	[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
+					self._leader_history =	[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
+
+					total_timesteps = sum(self._batch_ts)
+					target_timesteps = self.timesteps_per_batch * self.num_agents
+
+					total_episodes = sum(len(rewards) for rewards in self._batch_rewards)
+					ongoing_episodes = sum(1 for ts in self._episode_ts if ts > 0)
+
+					agent_stats = ' | '.join([
+					f'A{i}:{self._batch_ts[i]}ts/{len(self._batch_rewards[i])}ep'
+						for i in range(self.num_agents)
+					])
+
+					status_msg = (
+						f'Progress: {total_timesteps}/{target_timesteps} | '
+						f'{total_episodes}+{ongoing_episodes} episodes'
+					)
+					detail_msg = f'{agent_stats}'
+
+					await ws.send(json.dumps({
+						'tag': 'sendChat',
+						'data': status_msg,
+						'timestamp': int(time.time() * 1000),
+					}));
+
+					await ws.send(json.dumps({
+						'tag': 'sendChat',
+						'data': detail_msg,
+						'timestamp': int(time.time() * 1000),
+					}));
+
+					self._rollout_progressbar.n = sum(self._batch_ts)
+					self._rollout_progressbar.refresh()
+
+					await ws.send(json.dumps({
+						'tag': 'sendCommand',
+						'data': 'DEAL',
+						'timestamp': int(time.time() * 1000),
+						'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
+					}))
 				await self.unlock_processing_event(ws_idx)
 				return
-
-			console_listeners.broadcast_message(json.dumps({
-				'tag': 'receiveCommand',
-				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
-					'msg': ['=== reward ===\n' + f'new [{MultiAgentEnv.get_value_from_state(self._latest_state[ws_idx], turn_idx)}] - old [{MultiAgentEnv.get_value_from_state(prev_state, turn_idx) if prev_state is not None else None}] = reward [{reward}]'],
-					'status': 1
-				}
-			}))
 
 			console_listeners.broadcast_message(json.dumps({
 				'tag': 'receiveCommand',
@@ -540,10 +639,13 @@ class MultiAgentEnv:
 
 				if self._batch_ts[ws_idx] >= 0 and self._batch_ts[ws_idx] < self.timesteps_per_batch:
 
-					if self._episode_ts[ws_idx] < 0 or self._episode_ts[ws_idx] >= self.max_timesteps_per_episode:
+					if self._episode_ts[ws_idx] < 0:
 						self._episode_rewards[ws_idx] = np.empty(0)
 						self._episode_ts[ws_idx] = 0
-						self._latest_state[ws_idx] = None
+
+					elif self._episode_ts[ws_idx] >= self.max_timesteps_per_episode:
+						self._episode_rewards[ws_idx] = np.empty(0)
+						self._episode_ts[ws_idx] = 0
 
 						# Episode Complete
 						await ws.send(json.dumps({
@@ -563,15 +665,10 @@ class MultiAgentEnv:
 					except StopIteration:
 						pass
 
-					serialized_state = torch.tensor([ActorNN.serialize_state(self._latest_state[ws_idx])])
-					self._batch_states[ws_idx] = torch.concatenate((self._batch_states[ws_idx], serialized_state), dim = 0)
-
-					self._batch_ts[ws_idx] += 1
-					self._episode_ts[ws_idx] += 1
-
 					# Batch Full
-					if self._batch_ts[ws_idx] >= self.timesteps_per_batch:
-						self.is_training = False
+					if self._batch_ts[ws_idx] + 1 >= self.timesteps_per_batch:
+						self.is_rollout = False
+						self.is_training = True
 						for _ws_idx in range(self.num_agents):
 							self.end_episode(_ws_idx)
 
@@ -582,7 +679,8 @@ class MultiAgentEnv:
 							'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
 						}))
 
-						asyncio.get_running_loop().run_in_executor(None, self.train_post_rollout)
+						self._rollout_progressbar.close()
+						asyncio.create_task(self.train_post_rollout())
 
 						await self.unlock_processing_event(ws_idx)
 						return
@@ -594,8 +692,8 @@ class MultiAgentEnv:
 							await self.unlock_processing_event(ws_idx)
 							return
 
-						inputs = torch.tensor([ActorNN.serialize_state(self._latest_state[ws_idx])])
-						mask = torch.tensor([self.actor[actor_module_type].calculate_action_mask(state) for state in batch])
+						inputs = torch.tensor(np.array([ActorNN.serialize_state(self._latest_state[ws_idx])]))
+						mask = torch.tensor(np.array([self.actor[actor_module_type].calculate_action_mask(self._latest_state[ws_idx])]))
 
 						actions, log_probs = self.actor[actor_module_type](inputs, mask)
 
@@ -608,11 +706,16 @@ class MultiAgentEnv:
 							}
 						}))
 
+						self._batch_states[ws_idx] = torch.concatenate((self._batch_states[ws_idx], inputs), dim = 0)
 						self._batch_actions[ws_idx] = torch.concatenate((self._batch_actions[ws_idx], actions), dim = 0)
 						self._batch_action_masks[ws_idx] = torch.concatenate((self._batch_action_masks[ws_idx], mask), dim = 0)
 						self._batch_log_probs[ws_idx] = torch.concatenate((self._batch_log_probs[ws_idx], log_probs), dim = 0)
+						self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([0.0])), axis = 0)
 
-					await asyncio.sleep(0.5)
+					self._batch_ts[ws_idx] += 1
+					self._episode_ts[ws_idx] += 1
+
+					await asyncio.sleep(0.1)
 					await self.act(actions[0], ws_idx, turn_idx)
 
 		elif msg['tag'] == 'receiveCommand':
@@ -638,6 +741,20 @@ class MultiAgentEnv:
 			try:
 				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
 				self._latest_actions[ws_idx].pop(found_idx)
+
+				# Rollback rejected command
+				if self._batch_states[ws_idx].shape[0] > 0:
+					self._batch_states[ws_idx] = self._batch_states[ws_idx][:-1]
+					self._batch_actions[ws_idx] = self._batch_actions[ws_idx][:-1]
+					self._batch_action_masks[ws_idx] = self._batch_action_masks[ws_idx][:-1]
+					self._batch_log_probs[ws_idx] = self._batch_log_probs[ws_idx][:-1]
+
+					if self._episode_rewards[ws_idx].shape[0] > 0:
+						self._episode_rewards[ws_idx] = self._episode_rewards[ws_idx][:-1]
+
+					self._batch_ts[ws_idx] -= 1
+					self._episode_ts[ws_idx] -= 1
+
 			except StopIteration:
 				pass
 
@@ -684,6 +801,10 @@ class MultiAgentEnv:
 				card_int: int = card_str_to_idx(card)
 
 				trick: int = round(len(self._latest_observation[ws_idx]['stacks'][0]) / len(self._latest_observation[ws_idx]['turnOrder']))
+
+				if trick >= self._play_history[ws_idx].shape[0]:
+					continue
+
 				player_idx: int = self._latest_observation[ws_idx]['turnOrder'].index(username)
 				self._play_history[ws_idx][trick][player_idx] = card_int
 
@@ -693,15 +814,32 @@ class MultiAgentEnv:
 		self._episode_ts[ws_idx] = -1
 		self._episode_rewards[ws_idx] = np.empty(0)
 
+	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
+		start_time = time.time()
+
+		while time.time() - start_time < timeout:
+			all_in_lobby = all(self._latest_observation[ws_idx] is None for ws_idx in range(self.num_agents))
+
+			if all_in_lobby:
+				return True
+
+			await asyncio.sleep(0.1)
+
+		return False
+
 	async def train(self) -> None:
 		is_in_game = False
 		if self._latest_observation[0] is not None:
+			print(f'{self._latest_observation[0] = }')
 			is_in_game = self._latest_observation[0].get('gameState', '') != ''
 
 		self.reset()
-		self._batch_ts =		[0 for _ in range(self.num_agents)]
-		self._episode_ts =		[0 for _ in range(self.num_agents)]
-		self.is_training =		True
+		self._batch_ts =				[0 for _ in range(self.num_agents)]
+		self._episode_ts =				[0 for _ in range(self.num_agents)]
+		self.is_rollout =				True
+		self._rollout_progressbar =		tqdm(range(self.timesteps_per_batch * self.num_agents), dynamic_ncols = True, desc = f'Batch {self.batch_num} Rollout')
+		self._rollout_progressbar.n =	0
+		self._rollout_progressbar.refresh()
 		self.actor.train()
 		self.critic.train()
 
@@ -802,78 +940,124 @@ class MultiAgentEnv:
 
 	@staticmethod
 	def get_value_from_state(state: dict[str, np.ndarray], turn_idx: int) -> int:
-		return state['scores'][turn_idx] - (np.sum(state['scores']) - state['scores'][turn_idx])
+		return state['scores'][turn_idx] - np.mean(state['scores'])
 
 	@staticmethod
 	def get_reward_from_state_transition(old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
-		return MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
+		raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
+		return raw_reward / 100.0
 
-	def train_post_rollout(self) -> None:
-		batch_reward_to_gos =				compute_reward_to_gos()		# (B,)
-		batch_advantages, batch_returns =	compute_gaes()				# (B,), (B,)
+	async def train_post_rollout(self) -> None:
+		batch_advantages, batch_returns =	self.compute_gaes()							# (B,), (B,)
 
 		batch_states =			torch.concatenate(self._batch_states, dim = 0)			# (B, dim(obs))
 		batch_actions =			torch.concatenate(self._batch_actions, dim = 0)			# (B, dim(act))
 		batch_action_masks =	torch.concatenate(self._batch_action_masks, dim = 0)	# (B, dim(act))
 		batch_log_probs =		torch.concatenate(self._batch_log_probs, dim = 0)		# (B,)
-		batch_reward_to_gos =	torch.concatenate(self._batch_reward_to_gos, dim = 0)	# (B,)
 
 		game_states = batch_states[:, :len(GAME_STATE_MAP)]
 		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
 		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
 
 		eps = 1e-9
-		batch_advantages = (batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + eps)
+		batch_advantages =	(batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + eps)
 
-		actor_optimizer =	torch.optim.Adam(self.actor.parameters,		lr = self.lr)
-		critic_optimizer =	torch.optim.Adam(self.critic.parameters,	lr = self.lr)
+		with torch.no_grad():
+			batch_values_old = self.critic(batch_states)
 
-		batch_len = batch_states.shape[0]
+		actor_optimizer =	torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr)
+		critic_optimizer =	torch.optim.Adam(self.critic.parameters(),	lr = self.critic_lr)
 
-		for update_idx in range(self.n_updates_per_batch):
-			batch_log_probs_new = torch.zeros(batch_len)
-			batch_entropy = torch.tensor(0.0)
+		batch_len =			batch_states.shape[0]
+		mini_batch_len =	self.mini_batch_size
 
-			if mask_show_state.any():
-				show_log_probs, show_entropy = self.actor['SHOW'].evaluate_actions(
-					batch_states, batch_actions, batch_action_masks
-				)
-				batch_log_probs_new[show_mask] = show_log_probs
-				batch_entropy += show_entropy
+		actor_losses = []
+		critic_losses = []
+		kl_divergences = []
 
-			if mask_play_state.any():
-				play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
-					batch_states, batch_actions, batch_action_masks
-				)
-				batch_log_probs_new[play_mask] = play_log_probs
-				batch_entropy += play_entropy
+		for epoch in tqdm(range(self.n_updates_per_batch), desc = 'Training: ', dynamic_ncols = True):
+			indices = torch.randperm(batch_len)
 
-			ratios = torch.exp(batch_log_probs_new - batch_log_probs.detatch())
+			for start in range(0, batch_len, mini_batch_len):
+				end = start + mini_batch_len
+				mini_batch_indices = indices[start:end]
 
-			partial_min_1 = ratios * batch_advantages
-			partial_min_2 = torch.clamp(ratios, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * batch_advantages
+				mini_batch_states =			batch_states[mini_batch_indices]
+				mini_batch_actions =		batch_actions[mini_batch_indices]
+				mini_batch_action_masks =	batch_action_masks[mini_batch_indices]
+				mini_batch_log_probs =		batch_log_probs[mini_batch_indices]
+				mini_batch_advantages =		batch_advantages[mini_batch_indices]
+				mini_batch_returns =		batch_returns[mini_batch_indices]
+				mini_batch_values_old =		batch_values_old[mini_batch_indices]
+				mini_batch_show_mask =		show_mask[mini_batch_indices]
+				mini_batch_play_mask =		play_mask[mini_batch_indices]
 
-			actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * batch_entropy
+				mini_batch_log_probs_new =	torch.zeros(mini_batch_indices.shape[0])
+				mini_batch_entropy =		torch.tensor(0.0)
 
-			batch_values_new = self.critic(batch_states)
-			critic_loss = F.mse_loss(batch_values_new, batch_returns)
+				if mini_batch_show_mask.any():
+					show_log_probs, show_entropy = self.actor['SHOW'].evaluate_actions(
+						mini_batch_states[mini_batch_show_mask],
+						mini_batch_actions[mini_batch_show_mask],
+						mini_batch_action_masks[mini_batch_show_mask]
+					)
+					mini_batch_log_probs_new[mini_batch_show_mask] = show_log_probs
+					mini_batch_entropy += show_entropy
 
-			actor_optimizer.zero_grad()
-			actor_loss.backward()
-			torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-			actor_optimizer.step()
+				if mini_batch_play_mask.any():
+					play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
+						mini_batch_states[mini_batch_play_mask],
+						mini_batch_actions[mini_batch_play_mask],
+						mini_batch_action_masks[mini_batch_play_mask]
+					)
+					mini_batch_log_probs_new[mini_batch_play_mask] = play_log_probs
+					mini_batch_entropy += play_entropy
 
-			critic_optimizer.zero_grad()
-			critic_loss.backward()
-			torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-			critic_optimizer.step()
+				ratios = torch.exp(mini_batch_log_probs_new - mini_batch_log_probs.detach())
+				ratios = torch.clamp(ratios, eps, 100.0)
 
-		print(f'Training Complete:')
+				partial_min_1 = ratios * mini_batch_advantages
+				partial_min_2 = torch.clamp(ratios, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * mini_batch_advantages
+
+				actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * mini_batch_entropy
+
+				mini_batch_values_new = self.critic(mini_batch_states)
+				values_clipped = mini_batch_values_old + torch.clamp(mini_batch_values_new - mini_batch_values_old, -self.clip_epsilon, self.clip_epsilon)
+				critic_loss_unclipped = (mini_batch_values_new - mini_batch_returns) ** 2
+				critic_loss_clipped = (values_clipped - mini_batch_returns) ** 2
+				critic_loss = 0.5 * torch.max(critic_loss_unclipped, critic_loss_clipped).mean()
+
+				actor_optimizer.zero_grad()
+				actor_loss.backward()
+				torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+				actor_optimizer.step()
+
+				critic_optimizer.zero_grad()
+				critic_loss.backward()
+				torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+				critic_optimizer.step()
+
+				actor_losses.append(actor_loss.item())
+				critic_losses.append(critic_loss.item())
+
+				with torch.no_grad():
+					kl = (mini_batch_log_probs - mini_batch_log_probs_new).mean()
+					kl_divergences.append(kl.item())
+
+		all_episode_rewards = [rewards.sum() for ws_rewards in self._batch_rewards for rewards in ws_rewards]
+
+		print(f'-- Training Complete (Batch {self.batch_num}) --')
 		print(f'  Total Samples: {batch_len}')
-		print(f'  Actor Loss: {actor_loss.item():.4f}')
-		print(f'  Critic Loss: {critic_loss.item():.4f}')
-		print(f'  Mean Advantage: {batch_advantages.mean().item():.4f}')
-		print(f'  Mean Return: {batch_returns.mean().item():.4f}')
+		print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}')
+		print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}')
+		print(f'  Mean KL Divergence: {np.mean(kl_divergences):.4f}')
+		print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]')
+		print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}')
+
+		self.batch_num += 1
+
+		await self.wait_for_lobby()
+		await self.train()
 
 	def compute_gaes(self) -> tuple[torch.Tensor, torch.Tensor]:
 		all_advantages = []
@@ -902,7 +1086,7 @@ class MultiAgentEnv:
 					if t == episode_len - 1:
 						next_val = 0.0
 					else:
-						next_val = values[t + 1]
+						next_val = episode_values[t + 1]
 
 					delta = episode_rewards[t] + self.gamma * next_val - episode_values[t]
 					last_gae = delta + self.gamma * self.gae_lambda * last_gae
@@ -916,7 +1100,7 @@ class MultiAgentEnv:
 			all_advantages.append(np.concatenate(batch_advantages))
 			all_returns.append(np.concatenate(batch_returns))
 
-		return torch.concatenate(all_advantages, dim = 0), torch.concatenate(all_returns, dim = 0)
+		return torch.tensor(np.concatenate(all_advantages, axis = 0)), torch.tensor(np.concatenate(all_returns, axis = 0))
 
 	def compute_reward_to_gos(self) -> torch.Tensor:
 		all_reward_to_gos = []
@@ -937,18 +1121,7 @@ class MultiAgentEnv:
 
 			all_reward_to_gos.append(batch_reward_to_gos)
 
-		return torch.concatenate(all_reward_to_gos, dim = 0)
-
-	def evaluate(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-		batch_size = batch_states.shape[0]
-
-		log_probs = torch.zeros(batch_size)
-		entropy_list = []
-
-		values = self.critic(batch_states)
-
-		# TODO: continue
-
+		return torch.tensor(np.concatenate(all_reward_to_gos, axis = 0))
 
 async def console_server_handler(ws) -> None:
 	global console_listeners
@@ -957,7 +1130,7 @@ async def console_server_handler(ws) -> None:
 		console_listeners.add_ws(ws)
 		async for message in ws:
 			msg = json.loads(message)
-			print(msg)
+			# print(msg)
 			if msg['tag'] == 'sendCommand':
 				ws_idx = console_listeners.name_to_idx[msg['id']]
 				try:
