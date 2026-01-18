@@ -1,17 +1,23 @@
-import json
-import time
+from __future__ import annotations
+
+import argsparse
 import copy
+import enum
+import itertools as it
+import json
 import math
-import re
+import os
 import random
+import re
+import time
+import urllib.parse
+import warnings
 
 import asyncio
-# import contextlib
 import websockets
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 import numpy as np
-import itertools as it
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -29,16 +35,16 @@ NUM_PLAYERS = 4
 GAME_SETTINGS = {
 	'NUM_PLAYERS': 4
 }
-GAME_STATE_MAP = {
-	'SHOW_3':		0,
-	'SHOW_ALL':		1,
-	'PLAY_0':		2,
-	'PLAY_1':		3,
-	'PLAY_2':		4,
-	'PLAY_3':		5,
-	'SCORE':		6,
-	'LEADERBOARD':	7
-}
+
+class GameStates(enum.Enum):
+	SHOW_3 =		0
+	SHOW_ALL =		1
+	PLAY_0 =		2
+	PLAY_1 =		3
+	PLAY_2 =		4
+	PLAY_3 =		5
+	SCORE =			6
+	LEADERBOARD =	7
 
 
 def updateEnvironmentSettings(msg: dict) -> None:
@@ -149,7 +155,7 @@ class ActorNN(torch.nn.Module):
 	def calculate_action_mask(self, state: dict[str, np.ndarray]) -> np.ndarray:
 		legal_cards = set()
 
-		game_state = [k for k, v in GAME_STATE_MAP.items() if v == np.argmax(state['game_state']).item()][0]
+		game_state = [game_state.name for game_state in GameStates if game_state.value == np.argmax(state['game_state']).item()][0]
 
 		if game_state in {'SHOW_3', 'SHOW_ALL'}:
 			exposed = np.any(state['exposed'] > 1, axis = 0)
@@ -271,15 +277,35 @@ class CriticNN(torch.nn.Module):
 
 
 class MultiAgentEnv:
-	def __init__(self) -> None:
+
+	class ModelModes(enum.Enum):
+		train =			0
+		infer =			1
+
+	def __init__(self, args: argparse.Namespace | None = None) -> None:
+		self.args = args if args is not None else argparse.Namespace()
+
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
 		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None	for _ in range(self.num_agents)]
 
+		self.mode: MultiAgentEnv.ModelModes =										MultiAgentEnv.ModelModes.train
 		self.is_waiting_for_spectator: bool =										False
 		self.batch_num: int =														0
+		self.save_checkpoint_frequency: int =										10
 
 		self._is_processing_event: list[bool] =							[False					for _ in range(self.num_agents)]
 		self._event_queue: list[list[tuple[str, float]]] =				[list()					for _ in range(self.num_agents)]	# (message, timestamp)
+
+		self.training_history: dict[str, list[int | float]] = {
+			'batch': [],
+			'actor_loss': [],
+			'critic_loss': [],
+			'mean_kl_divergence': [],
+			'mean_return': [],
+			'max_episode_reward': [],
+			'min_episode_reward': [],
+			'mean_episode_reward': []
+		}
 
 		self.reset()
 
@@ -332,7 +358,27 @@ class MultiAgentEnv:
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
 
-	async def connect(self, url: str) -> None:
+	def save_checkpoint(self) -> None:
+		checkpoint = {
+			'batch_num': self.batch_num,
+			'actor_state_dict': self.actor.state_dict(),
+			'critic_state_dict': self.critic.state_dict(),
+			'training_history': self.training_history
+		}
+		path = os.path.join(self.args.save_dir, f'gong_zhu_player_{self.batch_num}.pt')
+		torch.save(checkpoint, path)
+		print(f'Saved checkpoint at [{os.path.abspath(path)}]')
+
+	def load_checkpoint(self, path: str) -> None:
+		checkpoint = torch.load(path)
+
+		self.batch_num = checkpoint['batch_num']
+		self.actor.load_state_dict(checkpoint['actor_state_dict'])
+		self.critic.load_state_dict(checkpoint['critic_state_dict'])
+		self.training_history = checkpoint['training_history']
+		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
+
+	async def connect_train(self, url: str) -> None:
 		global console_listeners
 		async def connect_ws(ws_idx):
 			async with connect(url) as ws:
@@ -428,17 +474,18 @@ class MultiAgentEnv:
 					while not all(hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected for i in range(self.num_agents)):
 						await asyncio.sleep(0.1)
 
-					self.is_waiting_for_spectator = True
+					if hasattr(self.args, 'spectate') and self.args.spectate:
+						self.is_waiting_for_spectator = True
 
-					loop = asyncio.get_running_loop()
-					await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
+						loop = asyncio.get_running_loop()
+						await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
 
-					self.is_waiting_for_spectator = False
+						self.is_waiting_for_spectator = False
+
 					await self.train()
 					return
 
 			else:
-				# print(f'showLobby: {ws_idx = } | {self.is_rollout = } | {self.is_waiting_for_spectator = }')
 				if ws_idx == 0:
 					if len(msg['data']['connected']) == GAME_SETTINGS['NUM_PLAYERS']:
 						if self.is_rollout:
@@ -462,7 +509,7 @@ class MultiAgentEnv:
 							await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
 
 							self.is_waiting_for_spectator = False
-							await self.train()		# can change this later
+							await self.train()
 
 			await self.unlock_processing_event(ws_idx)
 
@@ -901,8 +948,8 @@ class MultiAgentEnv:
 	def encode_observation(observation: dict, turn_idx: int) -> dict[str, np.ndarray]:
 
 		game_state: np.ndarray = one_hot_encode(
-			size = len(GAME_STATE_MAP),
-			arr = np.array([GAME_STATE_MAP[observation['gameState']]]),
+			size = len(GameStates),
+			arr = np.array([GameStates[observation['gameState']].value]),
 			dtype = np.float32
 		)
 
@@ -955,7 +1002,7 @@ class MultiAgentEnv:
 		batch_action_masks =	torch.concatenate(self._batch_action_masks, dim = 0)	# (B, dim(act))
 		batch_log_probs =		torch.concatenate(self._batch_log_probs, dim = 0)		# (B,)
 
-		game_states = batch_states[:, :len(GAME_STATE_MAP)]
+		game_states = batch_states[:, :len(GameStates)]
 		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
 		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
 
@@ -1046,6 +1093,15 @@ class MultiAgentEnv:
 
 		all_episode_rewards = [rewards.sum() for ws_rewards in self._batch_rewards for rewards in ws_rewards]
 
+		self.training_history['batch'].append(self.batch_num)
+		self.training_history['actor_loss'].append(actor_losses[-1])
+		self.training_history['critic_loss'].append(critic_losses[-1])
+		self.training_history['mean_kl_divergence'].append(np.mean(kl_divergences))
+		self.training_history['mean_return'].append(batch_returns.mean().item())
+		self.training_history['max_episode_reward'].append(max(all_episode_rewards) if all_episode_rewards else 0)
+		self.training_history['min_episode_reward'].append(min(all_episode_rewards) if all_episode_rewards else 0)
+		self.training_history['mean_episode_reward'].append(np.mean(all_episode_rewards) if all_episode_rewards else 0)
+
 		print(f'-- Training Complete (Batch {self.batch_num}) --')
 		print(f'  Total Samples: {batch_len}')
 		print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}')
@@ -1055,6 +1111,9 @@ class MultiAgentEnv:
 		print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}')
 
 		self.batch_num += 1
+
+		if self.batch_num % self.save_checkpoint_frequency == 0:
+			self.save_checkpoint()
 
 		await self.wait_for_lobby()
 		await self.train()
@@ -1147,22 +1206,104 @@ async def console_server_handler(ws) -> None:
 	finally:
 		console_listeners.remove_ws(ws)
 
+def parse_arguments() -> argparse.Namespace:
+	parser = argparse.ArgumentParser()
+
+	parser.add_argument(
+		'--url', '-u', type = str, default = 'ws://localhost:8080',
+		help = 'Server URL to connect to'
+	)
+
+	mode_group = parser.add_mutually_exclusive_group(required = True)
+	mode_group.add_argument(
+		'--train', action = 'store_true',
+		help = 'Run training'
+	)
+	mode_group.add_argument(
+		'--infer', action = 'store_true',
+		help = 'Run inference'
+	)
+
+	# Training Options
+	parser.add_argument(
+		'--console-server-url', type = str,
+		help = 'Console server URL to connect to'
+	)
+	parser.add_argument(
+		'--spectate', action = 'store_true',
+		help = 'Wait for spectators to join'
+	)
+	parser.add_argument(
+		'--save-dir', type = str, default = '.',
+		help = 'Where to save model files during training'
+	)
+
+	# Inference Options
+	parser.add_argument(
+		'--model', '-m', type = str,
+		help = 'Model checkpoint to load for inference'
+	)
+	parser.add_argument(
+		'--lobby', type = str,
+		help = 'Lobby name to join for inference'
+	)
+	parser.add_argument(
+		'--host', type = str,
+		help = 'Host name of lobby to join for inference'
+	)
+
+	args = parser.parse_args()
+
+	if args.infer:
+		if args.model is None:
+			parser.error('--infer requires --model to be specified')
+		if args.lobby is None:
+			parser.error('--infer requires --lobby to be specified')
+		if args.lobby is None:
+			parser.error('--infer requires --lobby to be specified')
+
+	return args
+
 async def main() -> None:
-	url = 'ws://localhost:8080'
+	args: argsparse.Namespace = parse_arguments()
 
 	global console_listeners
 	global env
 
 	console_listeners = ConsoleListeners()
 
-	console_server = await serve(handler = console_server_handler, host = 'localhost', port = '8000')
+	if args.console_server_url is not None:
+		console_server_url = urllib.parse.urlparse(args.console_server_url)
+		console_server_host = console_server_url.hostname
+		console_server_port = console_server_url.port
 
-	input('Console server started, [Enter] to continue...')
+		if console_server_host is None:
+			console_server_host = 'localhost'
+		if console_server_port is None:
+			console_server_port = '8080'
 
-	env = MultiAgentEnv()
+		console_server = await serve(handler = console_server_handler, host = console_server_host, port = console_server_port)
 
-	await env.connect(url)
+		input('Console server started, [Enter] to continue...')
 
+	env = MultiAgentEnv(args)
+
+	if args.model is not None:
+		if os.path.exists(args.model):
+			env.load_checkpoint(args.model)
+		else:
+			warnings.warn(f'Checkpoint not found at {os.path.abspath(args.model)}')
+
+			if args.infer:
+				warnings.warn('No checkpoint loaded; bot will use random initialization')
+
+	if args.train:
+		print('Starting training mode...')
+		await env.connect_train(args.url)
+
+	elif args.infer:
+		print('Starting inference mode...')
+		await env.connect_inference(args.url)
 
 if __name__ == '__main__':
 	asyncio.run(main())
