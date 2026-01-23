@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import argsparse
+import argparse
 import copy
 import enum
 import itertools as it
@@ -317,6 +317,21 @@ class MultiAgentEnv:
 
 		self._init_hyperparameters()
 
+	def _init_hyperparameters(self) -> None:
+		self.timesteps_per_batch: int =				256
+		self.max_timesteps_per_episode: int =		200
+
+		# PPO Parameters
+		self.gamma: float =							0.99
+		self.gae_lambda: float =					0.95
+		self.clip_epsilon: float =					0.2
+		self.n_updates_per_batch: int =				10
+		self.mini_batch_size: int =					64
+		self.actor_lr: float =						1e-4
+		self.critic_lr: float =						3e-4
+		self.entropy_coef: float =					0.01
+		self.max_grad_norm: float =					0.5
+
 	def reset(self) -> None:
 		self.is_rollout: bool =											False
 		self.is_training: bool =										False
@@ -325,7 +340,6 @@ class MultiAgentEnv:
 		self._latest_state: list[dict[str, np.ndarray] | None] =		[None					for _ in range(self.num_agents)]
 		self._latest_actions: list[list[dict[str, Any]]] =				[list()					for _ in range(self.num_agents)]
 		self._latest_reward: list[float | None] =						[None					for _ in range(self.num_agents)]
-		self._latest_done: list[bool] =									[False					for _ in range(self.num_agents)]
 
 		self._play_history: list[np.ndarray[np.int8]] =					[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
 		self._leader_history: list[np.ndarray[np.int8]] =				[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
@@ -343,20 +357,12 @@ class MultiAgentEnv:
 
 		self._rollout_progressbar: tqdm | None =						None
 
-	def _init_hyperparameters(self) -> None:
-		self.timesteps_per_batch: int =				256
-		self.max_timesteps_per_episode: int =		200
-
-		# PPO Parameters
-		self.gamma: float =							0.99
-		self.gae_lambda: float =					0.95
-		self.clip_epsilon: float =					0.2
-		self.n_updates_per_batch: int =				10
-		self.mini_batch_size: int =					64
-		self.actor_lr: float =						1e-4
-		self.critic_lr: float =						3e-4
-		self.entropy_coef: float =					0.01
-		self.max_grad_norm: float =					0.5
+	def reset_game_state(self, ws_idx = int) -> None:
+		self._play_history[ws_idx] =			np.full((13, NUM_PLAYERS), -1, dtype = np.int8)
+		self._leader_history[ws_idx] =			np.full((13,), -1, dtype = np.int8)
+		self._latest_observation[ws_idx] =		None
+		self._latest_state[ws_idx] =			None
+		self._latest_actions[ws_idx] =			list()
 
 	def save_checkpoint(self) -> None:
 		checkpoint = {
@@ -370,7 +376,7 @@ class MultiAgentEnv:
 		print(f'Saved checkpoint at [{os.path.abspath(path)}]')
 
 	def load_checkpoint(self, path: str) -> None:
-		checkpoint = torch.load(path)
+		checkpoint = torch.load(path, weights_only = False)
 
 		self.batch_num = checkpoint['batch_num']
 		self.actor.load_state_dict(checkpoint['actor_state_dict'])
@@ -378,25 +384,14 @@ class MultiAgentEnv:
 		self.training_history = checkpoint['training_history']
 		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
 
-	async def connect_train(self, url: str) -> None:
-		global console_listeners
-		async def connect_ws(ws_idx):
-			async with connect(url) as ws:
-				self.ws_list[ws_idx] = ws
-
-				console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
-
-				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
-				await self._listen(ws_idx)
-
-		tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
-		await asyncio.gather(*tasks)
-
 	async def unlock_processing_event(self, ws_idx: int) -> None:
 		if len(self._event_queue[ws_idx]):
 			message, timestamp = self._event_queue[ws_idx].pop(0)
 
-			asyncio.create_task(self._handle_message(ws_idx, message))
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				asyncio.create_task(self._handle_message_train(ws_idx, message))
+			elif self.mode == MultiAgentEnv.ModelModes.infer:
+				asyncio.create_task(self._handle_message_infer(ws_idx, message))
 
 		else:
 			self._is_processing_event[ws_idx] = False
@@ -408,9 +403,207 @@ class MultiAgentEnv:
 				self._event_queue[ws_idx].append((message, time.time()))
 				continue
 			else:
-				await self._handle_message(ws_idx, message)
+				if self.mode == MultiAgentEnv.ModelModes.train:
+					await self._handle_message_train(ws_idx, message)
+				elif self.mode == MultiAgentEnv.ModelModes.infer:
+					await self._handle_message_infer(ws_idx, message)
 
-	async def _handle_message(self, ws_idx: int, message: str) -> None:
+	def update_latest_from_gui_observation(self, observation: dict, ws_idx: int, turn_idx: int) -> None:
+		trick: int = round(len(observation['stacks'][0]) / len(observation['turnOrder']))
+		partial_state: dict[str, np.ndarray] = MultiAgentEnv.encode_observation(observation, turn_idx)
+
+		if observation['gameState'].startswith('PLAY_'):
+			self._leader_history[ws_idx][trick] = observation['turnFirstIdx']
+
+			for i, hand in enumerate(observation['hands']):
+				if len(hand[3]) > 0:
+					self._play_history[ws_idx][trick][i] = hand[3][0]
+
+		state = partial_state | {'play_history': self._play_history[ws_idx], 'leader_history': self._leader_history[ws_idx]}
+
+		self._latest_observation[ws_idx] = observation
+		self._latest_state[ws_idx] = state
+
+	def update_latest_from_console_observation(self, observation: list[str], ws_idx: int) -> None:
+		for obs in observation:
+			match: re.Match | None = re.match('Player \\[(.*)\\] played card \\[(.*)\\]', obs)
+			if match:
+				username: str; card: str
+				username, card = match.groups()
+				card_int: int = card_str_to_idx(card)
+
+				if self._latest_observation[ws_idx] is None:
+					continue
+
+				trick: int = round(len(self._latest_observation[ws_idx]['stacks'][0]) / len(self._latest_observation[ws_idx]['turnOrder']))
+
+				if trick >= self._play_history[ws_idx].shape[0]:
+					continue
+
+				player_idx: int = self._latest_observation[ws_idx]['turnOrder'].index(username)
+				self._play_history[ws_idx][trick][player_idx] = card_int
+
+	def cleanup_acknowledged_actions(self, ws_idx: int, current_frame: int) -> None:
+		self._latest_actions[ws_idx] = [
+			action for action in self._latest_actions[ws_idx]
+			if not (action['ack'] == 1 and action.get('newFrame') is not None and action['newFrame'] < current_frame)
+		]
+
+	def acknowledged_previous_command(self, ws_idx: int, current_frame: int) -> bool:
+		try:
+			found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['newFrame'] == current_frame and e['ack'] == 1)
+			self._latest_actions[ws_idx].pop(found_idx)
+			return True
+		except StopIteration:
+			return False
+
+	def is_waiting_for_ack(self, ws_idx: int, current_frame: int) -> bool:
+		try:
+			found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['oldFrame'] == current_frame and e['ack'] == -1)
+			return True
+		except StopIteration:
+			return False
+
+	def get_action(self, ws_idx: int, actor_module_type: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+		inputs = torch.tensor(np.array([ActorNN.serialize_state(self._latest_state[ws_idx])]))
+		mask = torch.tensor(np.array([self.actor[actor_module_type].calculate_action_mask(self._latest_state[ws_idx])]))
+
+		actions, log_probs = self.actor[actor_module_type](inputs, mask)
+
+		return actions, log_probs, inputs, mask
+
+	async def act(self, action: torch.Tensor, ws_idx: int, turn_idx: int) -> None:
+		commands = []
+		if self._latest_observation[ws_idx]['gameState'].startswith('SHOW'):
+			if torch.sum(action).item() != 0:
+				cards_to_play = torch.nonzero(action, as_tuple = True)[0]
+				hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
+				cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
+
+				args = ' '.join([str(e) for e in cards_to_play_idxs])
+				commands.append('PLAY ' + args)
+			commands.append('PASS')
+		elif self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
+			cards_to_play = torch.nonzero(action, as_tuple = True)[0]
+			hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
+			cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
+
+			args = ' '.join([str(e) for e in cards_to_play_idxs])
+			commands.append('PLAY ' + args)
+
+		command_str = ''
+		for i, command in enumerate(commands):
+			if i != 0:
+				command_str += '\n'
+			command_str += f'=> [{command}]'
+
+		console_listeners.broadcast_message(json.dumps({
+			'tag': 'receiveCommand',
+			'data': {
+				'id': console_listeners.idx_to_name[ws_idx],
+				'msg': [f' === PLAYING WITH OBSERVATION: ===\n' + json.dumps(self._latest_observation[ws_idx]), command_str],
+				'status': 1
+			}
+		}))
+
+		ws = self.ws_list[ws_idx]
+		for command in commands:
+			self._latest_actions[ws_idx].append({
+				'command': command,
+				'oldFrame': self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1,
+				'newFrame': None,
+				'ack': -1
+			})
+			await ws.send(json.dumps({
+				'tag': 'sendCommand',
+				'data': command,
+				'timestamp': int(time.time() * 1000),
+				'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
+			}))
+
+	@staticmethod
+	def encode_observation(observation: dict, turn_idx: int) -> dict[str, np.ndarray]:
+
+		game_state: np.ndarray = one_hot_encode(
+			size = len(GameStates),
+			arr = np.array([GameStates[observation['gameState']].value]),
+			dtype = np.float32
+		)
+
+		hand: np.ndarray = one_hot_encode(
+			size = 52,
+			arr = np.array(observation['hands'][turn_idx][0]),
+			dtype = np.float32
+		)
+
+		scores: np.ndarray = np.array(observation['scores'], dtype = np.float32)[:, 1]
+
+		current_trick: np.ndarray = np.array([(hand[3][0] if len(hand[3]) else -1) for hand in observation['hands']], dtype = np.float32)
+
+		collected_cards: np.ndarray = np.array([one_hot_encode(
+			size = 52,
+			arr = hand[2],
+			dtype = np.float32
+		) for hand in observation['hands']])
+
+		exposed: np.ndarray = np.ones((GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.float32)
+		values: dict[int, int] = {shown_card: value for shown_card, value in observation['stacks'][1]}
+		for i, _hand in enumerate(observation['hands']):
+			for card in _hand[1]:
+				if card in values.keys():
+					exposed[i, card] = values[card]
+
+		return {
+			'game_state':		game_state,
+			'hand':				hand,
+			'scores':			scores,
+			'current_trick':	current_trick,
+			'collected_cards':	collected_cards,
+			'exposed':			exposed
+		}
+
+	@staticmethod
+	def get_value_from_state(state: dict[str, np.ndarray], turn_idx: int) -> int:
+		return state['scores'][turn_idx] - np.mean(state['scores'])
+
+	@staticmethod
+	def get_reward_from_state_transition(old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
+		raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
+		return raw_reward / 100.0
+
+	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
+		start_time = time.time()
+
+		while time.time() - start_time < timeout:
+			all_in_lobby = all(self._latest_observation[ws_idx] is None for ws_idx in range(self.num_agents))
+
+			if all_in_lobby:
+				return True
+
+			await asyncio.sleep(0.1)
+
+		return False
+
+	# ========== TRAINING MODE ==========
+
+	async def connect_train(self, url: str) -> None:
+		global console_listeners
+
+		self.mode = MultiAgentEnv.ModelModes.train
+
+		async def connect_ws(ws_idx: int) -> None:
+			async with connect(url) as ws:
+				self.ws_list[ws_idx] = ws
+
+				console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+
+				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
+				await self._listen(ws_idx)
+
+		tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
+		await asyncio.gather(*tasks)
+
+	async def _handle_message_train(self, ws_idx: int, message: str) -> None:
 		global console_listeners
 		ws = self.ws_list[ws_idx]
 
@@ -421,7 +614,11 @@ class MultiAgentEnv:
 
 		if msg['tag'] == 'receiveSessionID':
 			ws.sessionID =  msg['data']['sessionID']
-			await ws.send(json.dumps({'tag': 'requestUsername', 'data': 'bot', 'timestamp': int(time.time() * 1000)}))
+			await ws.send(json.dumps({
+				'tag': 'requestUsername',
+				'data': 'bot',
+				'timestamp': int(time.time() * 1000)
+			}))
 
 		elif msg['tag'] == 'receiveUsername':
 			ws.username = msg['data']
@@ -438,11 +635,14 @@ class MultiAgentEnv:
 				}))
 
 		elif msg['tag'] == 'createdLobby':
-			await ws.send(json.dumps({'tag': 'joinLobby', 'data': msg['data'], 'timestamp': int(time.time() * 1000)}))
+			await ws.send(json.dumps({
+				'tag': 'joinLobby',
+				'data': msg['data'],
+				'timestamp': int(time.time() * 1000)
+			}))
 
 		elif msg['tag'] == 'showLobby':
-			self._latest_observation[ws_idx] = None
-			self._latest_state[ws_idx] = None
+			self.reset_game_state(ws_idx)
 
 			if not hasattr(ws, 'connected'):
 				ws.connected = True
@@ -526,7 +726,7 @@ class MultiAgentEnv:
 							'data': server,
 							'timestamp': int(time.time() * 1000)
 						}))
-						break
+						return
 
 		elif msg['tag'] == 'updateGUI':
 
@@ -538,22 +738,15 @@ class MultiAgentEnv:
 			updateEnvironmentSettings(msg)
 
 			turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+			current_frame = msg['data']['gameData']['currentFrame']
 
 			# Update Internals From Message
 			prev_state = copy.deepcopy(self._latest_state[ws_idx])
 			prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
-			self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, GAME_SETTINGS['turn_order'].index(ws.username))
+			self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
 
-			self._latest_actions[ws_idx] = [e for e in self._latest_actions[ws_idx] if not (e['ack'] == 1 and e.get('newFrame') is not None and e['newFrame'] < msg['data']['gameData']['currentFrame'])]
-
-			# GUI Update From Previous Command ACK
-			found_matching_command = False
-			try:
-				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['newFrame'] == msg['data']['gameData']['currentFrame'] and e['ack'] == 1)
-				self._latest_actions[ws_idx].pop(found_idx)
-				found_matching_command = True
-			except StopIteration:
-				pass
+			self.cleanup_acknowledged_actions(ws_idx, current_frame)
+			found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
 
 			# Nothing Happened -> Return
 			if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
@@ -666,7 +859,7 @@ class MultiAgentEnv:
 			}))
 
 			# Needs to Act -> Make Action
-			if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:	# Need to also include end of game
+			if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
 				console_listeners.broadcast_message(json.dumps({
 					'tag': 'receiveCommand',
 					'data': {
@@ -705,12 +898,9 @@ class MultiAgentEnv:
 						return
 
 					# Skip Action if Waiting for ACK
-					try:
-						found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['oldFrame'] == self._latest_observation[ws_idx]['currentFrame'] and e['ack'] == -1)
+					if self.is_waiting_for_ack(ws_idx, current_frame):
 						await self.unlock_processing_event(ws_idx)
 						return
-					except StopIteration:
-						pass
 
 					# Batch Full
 					if self._batch_ts[ws_idx] + 1 >= self.timesteps_per_batch:
@@ -739,10 +929,7 @@ class MultiAgentEnv:
 							await self.unlock_processing_event(ws_idx)
 							return
 
-						inputs = torch.tensor(np.array([ActorNN.serialize_state(self._latest_state[ws_idx])]))
-						mask = torch.tensor(np.array([self.actor[actor_module_type].calculate_action_mask(self._latest_state[ws_idx])]))
-
-						actions, log_probs = self.actor[actor_module_type](inputs, mask)
+						actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
 
 						console_listeners.broadcast_message(json.dumps({
 							'tag': 'receiveCommand',
@@ -810,8 +997,10 @@ class MultiAgentEnv:
 				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
 				self._latest_actions[ws_idx][found_idx]['newFrame'] = msg['data']['newFrame']
 				self._latest_actions[ws_idx][found_idx]['ack'] = 1
+
 			except StopIteration:
 				pass
+
 			console_listeners.broadcast_message(json.dumps({
 				'tag': 'receiveCommand',
 				'data': {
@@ -823,56 +1012,11 @@ class MultiAgentEnv:
 
 		await self.unlock_processing_event(ws_idx)
 
-	def update_latest_from_gui_observation(self, observation: dict, ws_idx: int, turn_idx: int) -> None:
-		trick: int = round(len(observation['stacks'][0]) / len(observation['turnOrder']))
-		partial_state: dict[str, np.ndarray] = MultiAgentEnv.encode_observation(observation, turn_idx)
-
-		if observation['gameState'].startswith('PLAY_'):
-			self._leader_history[ws_idx][trick] = observation['turnFirstIdx']
-
-			for i, hand in enumerate(observation['hands']):
-				if len(hand[3]) > 0:
-					self._play_history[ws_idx][trick][i] = hand[3][0]
-
-		state = partial_state | {'play_history': self._play_history[ws_idx], 'leader_history': self._leader_history[ws_idx]}
-
-		self._latest_observation[ws_idx] = observation
-		self._latest_state[ws_idx] = state
-
-	def update_latest_from_console_observation(self, observation: list[str], ws_idx: int) -> None:
-		for obs in observation:
-			match: re.Match | None = re.match('Player \\[(.*)\\] played card \\[(.*)\\]', obs)
-			if match:
-				username: str; card: str
-				username, card = match.groups()
-				card_int: int = card_str_to_idx(card)
-
-				trick: int = round(len(self._latest_observation[ws_idx]['stacks'][0]) / len(self._latest_observation[ws_idx]['turnOrder']))
-
-				if trick >= self._play_history[ws_idx].shape[0]:
-					continue
-
-				player_idx: int = self._latest_observation[ws_idx]['turnOrder'].index(username)
-				self._play_history[ws_idx][trick][player_idx] = card_int
-
 	def end_episode(self, ws_idx: int) -> None:
 		self._batch_lens[ws_idx] = np.concatenate((self._batch_lens[ws_idx], np.array([self._episode_ts[ws_idx]])), axis = 0)
 		self._batch_rewards[ws_idx].append(np.copy(self._episode_rewards[ws_idx]))
 		self._episode_ts[ws_idx] = -1
 		self._episode_rewards[ws_idx] = np.empty(0)
-
-	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
-		start_time = time.time()
-
-		while time.time() - start_time < timeout:
-			all_in_lobby = all(self._latest_observation[ws_idx] is None for ws_idx in range(self.num_agents))
-
-			if all_in_lobby:
-				return True
-
-			await asyncio.sleep(0.1)
-
-		return False
 
 	async def train(self) -> None:
 		is_in_game = False
@@ -894,105 +1038,6 @@ class MultiAgentEnv:
 			await self.ws_list[0].send(json.dumps({'tag': 'sendCommand', 'data': 'EXIT', 'timestamp': int(time.time() * 1000), 'currentFrame': {'$bigint': str(self._latest_observation[0]['currentFrame']) if self._latest_observation[0] is not None else -1}}))
 		else:
 			await self.ws_list[0].send(json.dumps({'tag': 'startGame', 'timestamp': int(time.time() * 1000)}))
-
-	async def act(self, action: torch.Tensor, ws_idx: int, turn_idx: int) -> None:
-		commands = []
-		if self._latest_observation[ws_idx]['gameState'].startswith('SHOW'):
-			if torch.sum(action).item() != 0:
-				cards_to_play = torch.nonzero(action, as_tuple = True)[0]
-				hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-				cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
-
-				args = ' '.join([str(e) for e in cards_to_play_idxs])
-				commands.append('PLAY ' + args)
-			commands.append('PASS')
-		elif self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
-			cards_to_play = torch.nonzero(action, as_tuple = True)[0]
-			hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-			cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
-
-			args = ' '.join([str(e) for e in cards_to_play_idxs])
-			commands.append('PLAY ' + args)
-
-		command_str = ''
-		for i, command in enumerate(commands):
-			if i != 0:
-				command_str += '\n'
-			command_str += f'=> [{command}]'
-
-		console_listeners.broadcast_message(json.dumps({
-			'tag': 'receiveCommand',
-			'data': {
-				'id': console_listeners.idx_to_name[ws_idx],
-				'msg': [f' === PLAYING WITH OBSERVATION: ===\n' + json.dumps(self._latest_observation[ws_idx]), command_str],
-				'status': 1
-			}
-		}))
-
-		ws = self.ws_list[ws_idx]
-		for command in commands:
-			self._latest_actions[ws_idx].append({
-				'command': command,
-				'oldFrame': self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1,
-				'newFrame': None,
-				'ack': -1
-			})
-			await ws.send(json.dumps({
-				'tag': 'sendCommand',
-				'data': command,
-				'timestamp': int(time.time() * 1000),
-				'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-			}))
-
-	@staticmethod
-	def encode_observation(observation: dict, turn_idx: int) -> dict[str, np.ndarray]:
-
-		game_state: np.ndarray = one_hot_encode(
-			size = len(GameStates),
-			arr = np.array([GameStates[observation['gameState']].value]),
-			dtype = np.float32
-		)
-
-		hand: np.ndarray = one_hot_encode(
-			size = 52,
-			arr = np.array(observation['hands'][turn_idx][0]),
-			dtype = np.float32
-		)
-
-		scores: np.ndarray = np.array(observation['scores'], dtype = np.float32)[:, 1]
-
-		current_trick: np.ndarray = np.array([(hand[3][0] if len(hand[3]) else -1) for hand in observation['hands']], dtype = np.float32)
-
-		collected_cards: np.ndarray = np.array([one_hot_encode(
-			size = 52,
-			arr = hand[2],
-			dtype = np.float32
-		) for hand in observation['hands']])
-
-		exposed: np.ndarray = np.ones((GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.float32)
-		values: dict[int, int] = {shown_card: value for shown_card, value in observation['stacks'][1]}
-		for i, _hand in enumerate(observation['hands']):
-			for card in _hand[1]:
-				if card in values.keys():
-					exposed[i, card] = values[card]
-
-		return {
-			'game_state':		game_state,
-			'hand':				hand,
-			'scores':			scores,
-			'current_trick':	current_trick,
-			'collected_cards':	collected_cards,
-			'exposed':			exposed
-		}
-
-	@staticmethod
-	def get_value_from_state(state: dict[str, np.ndarray], turn_idx: int) -> int:
-		return state['scores'][turn_idx] - np.mean(state['scores'])
-
-	@staticmethod
-	def get_reward_from_state_transition(old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
-		raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
-		return raw_reward / 100.0
 
 	async def train_post_rollout(self) -> None:
 		batch_advantages, batch_returns =	self.compute_gaes()							# (B,), (B,)
@@ -1182,6 +1227,149 @@ class MultiAgentEnv:
 
 		return torch.tensor(np.concatenate(all_reward_to_gos, axis = 0))
 
+	# ========== INFERENCE MODE ==========
+
+	async def connect_infer(self, url: str) -> None:
+		global console_listeners
+
+		self.mode = MultiAgentEnv.ModelModes.infer
+		self.actor.eval()
+
+		# Only One Agent
+		ws_idx = 0
+		async with connect(url) as ws:
+			self.ws_list[ws_idx] = ws
+
+			console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+
+			await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
+			await self._listen(ws_idx)
+
+	async def _handle_message_infer(self, ws_idx: int, message: str) -> None:
+		ws = self.ws_list[ws_idx]
+
+		self._is_processing_event[ws_idx] = True
+
+		msg = json.loads(message, object_hook = json_parser)
+
+		if msg['tag'] == 'receiveSessionID':
+			ws.sessionID =  msg['data']['sessionID']
+			await ws.send(json.dumps({
+				'tag': 'requestUsername',
+				'data': 'bot',
+				'timestamp': int(time.time() * 1000)
+			}))
+
+		elif msg['tag'] == 'receiveUsername':
+			ws.username = msg['data']
+			if ws_idx == 0:
+				await ws.send(json.dumps({
+					'tag': 'getLobbies',
+					'timestamp': int(time.time() * 1000)
+				}))
+
+		elif msg['tag'] == 'updateLobbies':
+			if not hasattr(ws, 'connected'):
+				servers = msg['data']
+				for server in servers:
+					if (
+						hasattr(self.args, 'lobby') and self.args.lobby == server['name'] and
+						hasattr(self.args, 'host') and self.args.host == server['host']
+					):
+						await ws.send(json.dumps({
+							'tag': 'joinLobby',
+							'data': server,
+							'timestamp': int(time.time() * 1000)
+						}))
+
+						await self.unlock_processing_event(ws_idx)
+						return
+
+				await asyncio.sleep(2)
+				await ws.send(json.dumps({
+					'tag': 'getLobbies',
+					'timestamp': int(time.time() * 1000)
+				}))
+
+		elif msg['tag'] == 'showLobby':
+			self.reset_game_state(ws_idx)
+
+			if not hasattr(ws, 'connected'):
+				ws.connected = True
+
+				updateEnvironmentSettings(msg)
+
+		elif msg['tag'] == 'updateGUI':
+			updateEnvironmentSettings(msg)
+
+			# Spectator or Not In Game
+			if ws.username not in GAME_SETTINGS['turn_order']:
+				await self.unlock_processing_event(ws_idx)
+				return
+
+			turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+			current_frame = msg['data']['gameData']['currentFrame']
+
+			# Update Internals From Message
+			prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
+			self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
+
+			self.cleanup_acknowledged_actions(ws_idx, current_frame)
+			found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
+
+			# Nothing Happened -> Return
+			if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+				await self.unlock_processing_event(ws_idx)
+				return
+
+			# Game Ended
+			game_state = self._latest_observation[ws_idx]['gameState']
+			done = game_state in {'LEADERBOARD', 'SCORE'}
+
+			if done:
+				self.reset_game_state(ws_idx)
+				await self.unlock_processing_event(ws_idx)
+				return
+
+			# Needs to Act -> Make Action
+			if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
+
+				# Skip Action if Waiting for ACK
+				if self.is_waiting_for_ack(ws_idx, current_frame):
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
+
+				if actor_module_type == '':
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
+				await self.act(actions[0], ws_idx, turn_idx)
+
+		elif msg['tag'] == 'receiveCommand':
+			self.update_latest_from_console_observation(msg['data'], ws_idx)
+
+		elif msg['tag'] == 'commandNACK':
+			try:
+				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
+				self._latest_actions[ws_idx].pop(found_idx)
+
+			except StopIteration:
+				pass
+
+		elif msg['tag'] == 'commandACK':
+			try:
+				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
+				self._latest_actions[ws_idx][found_idx]['newFrame'] = msg['data']['newFrame']
+				self._latest_actions[ws_idx][found_idx]['ack'] = 1
+
+			except StopIteration:
+				pass
+
+		await self.unlock_processing_event(ws_idx)
+
 async def console_server_handler(ws) -> None:
 	global console_listeners
 	global env
@@ -1265,7 +1453,7 @@ def parse_arguments() -> argparse.Namespace:
 	return args
 
 async def main() -> None:
-	args: argsparse.Namespace = parse_arguments()
+	args: argparse.Namespace = parse_arguments()
 
 	global console_listeners
 	global env
@@ -1303,7 +1491,7 @@ async def main() -> None:
 
 	elif args.infer:
 		print('Starting inference mode...')
-		await env.connect_inference(args.url)
+		await env.connect_infer(args.url)
 
 if __name__ == '__main__':
 	asyncio.run(main())
