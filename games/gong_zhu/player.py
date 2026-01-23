@@ -281,6 +281,7 @@ class MultiAgentEnv:
 	class ModelModes(enum.Enum):
 		train =			0
 		infer =			1
+		eval =			2
 
 	def __init__(self, args: argparse.Namespace | None = None) -> None:
 		self.args = args if args is not None else argparse.Namespace()
@@ -1370,6 +1371,101 @@ class MultiAgentEnv:
 
 		await self.unlock_processing_event(ws_idx)
 
+class EloRatingSystem:
+
+	def __init__(self, k_factor: float = 32.0, initial_rating: float = 1500.0) -> None:
+		self.k_factor =								k_factor
+		self.initial_rating =						initial_rating
+		self.ratings: dict[str, float] =			{}
+		self.games_played: dict[str, float] =		{}
+		self.history: list[dict] =					[]
+
+	def get_rating(self, model_path: str) -> float:
+		model_path = os.path.abspath(model_path)
+
+		if model_path not in self.ratings.keys():
+			rating = self.load_rating(model_path)
+			self.ratings[model_path] = rating if rating is not None else self.initial_rating
+
+		return self.ratings[model_path]
+
+	def load_rating(self, model_path: str) -> float | None:
+		model_path = os.path.abspath(model_path)
+		try:
+			checkpoint = torch.load(model_path, weights_only = False)
+			return checkpoint.get('elo_rating', None)
+		except Exception as e:
+			warnings.warn(f'Could not load rating from [{model_path}]: {e}')
+			return None
+
+	def save_rating(self, model_path: str) -> None:
+		model_path = os.path.abspath(model_path)
+		try:
+			checkpoint = torch.load(model_path, weights_only = False)
+			checkpoint['elo_rating'] = self.ratings[model_path]
+			torch.save(checkpoint, model_path)
+		except Exception as e:
+			warnings.warn(f'Could not save rating to [{model_path}]: {e}')
+
+	def get_expected_score(self, rating_a: float, rating_b: float) -> float:
+		return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
+
+	def update_ratings(self, model_paths: list[str], final_scores: list[float]) -> dict[str, float]:
+		assert len(model_paths) == len(final_scores)
+
+		n = len(model_paths)
+
+		current_ratings: list[float] = [self.get_rating(path) for path in model_paths]
+		rating_changes: dict[str, list[float]] = {path: [] for path in model_paths}
+
+		expected_scores = [0 for _ in range(n)]
+		actual_scores = [0 for _ in range(n)]
+
+		for i in range(n):
+			for j in range(i + 1, n):
+				expected_i = self.get_expected_score(current_ratings[i], current_ratings[j])
+				expected_j = 1 - expected_i
+
+				expected_scores[i] += expected_i
+				expected_scores[j] += expected_j
+
+
+				if final_scores[i] > final_scores[j]:
+					actual_scores[i] += 1
+					actual_scores[j] += 0
+				elif final_scores[i] == final_scores[j]:
+					actual_scores[i] += 0.5
+					actual_scores[j] += 0.5
+				else:
+					actual_scores[i] += 0
+					actual_scores[j] += 1
+
+		expected_scores = [score / (n - 1) for score in expected_scores]
+		actual_scores = [score / (n - 1) for score in actual_scores]
+
+		changes = [self.k_factor * (actual - expected) for expected, actual in zip(expected_scores, actual_scores)]
+
+		for i in range(n):
+			rating_changes[model_paths[i]].append(changes[i])
+
+		final_changes = {}
+		for model_path in set(model_paths):
+			changes = rating_changes[model_path]
+			average_change = sum(changes) / len(changes)
+			self.ratings[model_path] += average_change
+			self.games_played[model_path] += 1
+			final_changes[model_path] = average_change
+
+		return final_changes
+
+	def get_leaderboard(self) -> list[tuple[str, float, int]]:
+		leaderboard = [
+			(path, self.ratings[path], self.games_played.get(path, 0))
+			for path in self.ratings.keys()
+		]
+
+		return sorted(leaderboard, key = lambda x: x[1], reverse = True)
+
 async def console_server_handler(ws) -> None:
 	global console_listeners
 	global env
@@ -1411,6 +1507,10 @@ def parse_arguments() -> argparse.Namespace:
 		'--infer', action = 'store_true',
 		help = 'Run inference'
 	)
+	mode_group.add_argument(
+		'--eval', action = 'store_true',
+		help = 'Run evaluation'
+	)
 
 	# Training Options
 	parser.add_argument(
@@ -1440,15 +1540,33 @@ def parse_arguments() -> argparse.Namespace:
 		help = 'Host name of lobby to join for inference'
 	)
 
+	# Evaluation Options
+	parser.add_argument(
+		'--model-dir', type = str,
+		help = 'Directory containing model checkpoints'
+	)
+	parser.add_argument(
+		'--k-factor', type = float, default = 32.0,
+		help = 'K-Factor for Elo calculation'
+	)
+
 	args = parser.parse_args()
 
 	if args.infer:
 		if args.model is None:
 			parser.error('--infer requires --model to be specified')
+		if not os.path.isfile(args.model):
+			parser.error(f'--model [{args.model}] is not a valid file')
 		if args.lobby is None:
 			parser.error('--infer requires --lobby to be specified')
 		if args.lobby is None:
 			parser.error('--infer requires --lobby to be specified')
+
+	if args.eval:
+		if args.model_dir is None:
+			parser.error('--eval requires --model-dir to be specified')
+		if not os.path.isdir(args.model_dir):
+			parser.error(f'--model-dir [{args.model_dir}] is not a valid directory')
 
 	return args
 
