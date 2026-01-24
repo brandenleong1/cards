@@ -283,13 +283,17 @@ class MultiAgentEnv:
 		infer =			1
 		eval =			2
 
-	def __init__(self, args: argparse.Namespace | None = None) -> None:
+	def __init__(self,
+		args: argparse.Namespace | None = None,
+		mode: MultiAgentEnv.ModelModes = MultiAgentEnv.ModelModes.train
+	) -> None:
+
 		self.args = args if args is not None else argparse.Namespace()
 
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
 		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None	for _ in range(self.num_agents)]
 
-		self.mode: MultiAgentEnv.ModelModes =										MultiAgentEnv.ModelModes.train
+		self.mode: MultiAgentEnv.ModelModes =										mode
 		self.is_waiting_for_spectator: bool =										False
 		self.batch_num: int =														0
 		self.save_checkpoint_frequency: int =										10
@@ -365,6 +369,9 @@ class MultiAgentEnv:
 		self._latest_state[ws_idx] =			None
 		self._latest_actions[ws_idx] =			list()
 
+	def set_mode(self, mode: MultiAgentEnv.ModelModes) -> None:
+		self.mode = mode
+
 	def save_checkpoint(self) -> None:
 		checkpoint = {
 			'batch_num': self.batch_num,
@@ -385,14 +392,40 @@ class MultiAgentEnv:
 		self.training_history = checkpoint['training_history']
 		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
 
+	async def connect(self, url: str) -> None:
+		global console_listeners
+
+		if self.mode == MultiAgentEnv.ModelModes.train:
+			async def connect_ws(ws_idx: int) -> None:
+				async with connect(url) as ws:
+					self.ws_list[ws_idx] = ws
+
+					console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+
+					await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
+					await self._listen(ws_idx)
+
+			tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
+			await asyncio.gather(*tasks)
+
+		elif self.mode == MultiAgentEnv.ModelModes.infer:
+			self.actor.eval()
+
+			# Only One Agent
+			ws_idx = 0
+			async with connect(url) as ws:
+				self.ws_list[ws_idx] = ws
+
+				console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+
+				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
+				await self._listen(ws_idx)
+
 	async def unlock_processing_event(self, ws_idx: int) -> None:
 		if len(self._event_queue[ws_idx]):
 			message, timestamp = self._event_queue[ws_idx].pop(0)
 
-			if self.mode == MultiAgentEnv.ModelModes.train:
-				asyncio.create_task(self._handle_message_train(ws_idx, message))
-			elif self.mode == MultiAgentEnv.ModelModes.infer:
-				asyncio.create_task(self._handle_message_infer(ws_idx, message))
+			asyncio.create_task(self._handle_message(ws_idx, message))
 
 		else:
 			self._is_processing_event[ws_idx] = False
@@ -404,10 +437,486 @@ class MultiAgentEnv:
 				self._event_queue[ws_idx].append((message, time.time()))
 				continue
 			else:
+				await self._handle_message(ws_idx, message)
+
+	async def _handle_message(self, ws_idx: int, message: str) -> None:
+		global console_listeners
+		ws = self.ws_list[ws_idx]
+
+		self._is_processing_event[ws_idx] = True
+
+		msg = json.loads(message, object_hook = json_parser)
+		# print(ws_idx, msg)
+
+		if msg['tag'] == 'receiveSessionID':
+			ws.sessionID =  msg['data']['sessionID']
+			await ws.send(json.dumps({
+				'tag': 'requestUsername',
+				'data': 'bot',
+				'timestamp': int(time.time() * 1000)
+			}))
+
+		elif msg['tag'] == 'receiveUsername':
+			ws.username = msg['data']
+
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				if ws_idx == 0:
+					await ws.send(json.dumps({
+						'tag': 'createLobby',
+						'data': {
+							'name': 'training',
+							'time': int(time.time() * 1000),
+							'creator': ws.username,
+							'host': ws.username
+						},
+						'timestamp': int(time.time() * 1000)
+					}))
+
+			elif self.mode == MultiAgentEnv.ModelModes.infer:
+				if ws_idx == 0:
+					await ws.send(json.dumps({
+						'tag': 'getLobbies',
+						'timestamp': int(time.time() * 1000)
+					}))
+
+		elif msg['tag'] == 'createdLobby':
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				await ws.send(json.dumps({
+					'tag': 'joinLobby',
+					'data': msg['data'],
+					'timestamp': int(time.time() * 1000)
+				}))
+
+		elif msg['tag'] == 'showLobby':
+			self.reset_game_state(ws_idx)
+
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				if not hasattr(ws, 'connected'):
+					ws.connected = True
+
+					if ws_idx == 0:
+						settings = copy.deepcopy(msg['data']['gameData']['settings'])
+						settings['spectatorPolicy'] = 'constant'
+						settings['expose3'] = True
+						settings['zhuYangManJuan'] = True
+						await ws.send(json.dumps({
+							'tag': 'updateLobbySettings',
+							'data': {'settings': settings},
+							'timestamp': int(time.time() * 1000)
+						}))
+
+						updateEnvironmentSettings(msg)
+
+						self._play_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']), GAME_SETTINGS['NUM_PLAYERS']), -1, dtype = np.int8) for _ in range(self.num_agents)]
+						self._leader_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']),), -1, dtype = np.int8) for _ in range(self.num_agents)]
+
+						for ws_i in self.ws_list[1:]:
+							await ws_i.send(json.dumps({
+								'tag': 'getLobbies',
+								'timestamp': int(time.time() * 1000)
+							}))
+
+						await self.unlock_processing_event(ws_idx)
+
+						while not all(hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected for i in range(self.num_agents)):
+							await asyncio.sleep(0.1)
+
+						if hasattr(self.args, 'spectate') and self.args.spectate:
+							self.is_waiting_for_spectator = True
+
+							loop = asyncio.get_running_loop()
+							await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
+
+							self.is_waiting_for_spectator = False
+
+						await self.train()
+
+				else:
+					if ws_idx == 0:
+						if len(msg['data']['connected']) == GAME_SETTINGS['NUM_PLAYERS']:
+							if self.is_rollout:
+								await ws.send(json.dumps({
+									'tag': 'startGame',
+									'timestamp': int(time.time() * 1000)
+								}))
+
+							elif self.is_training:
+								pass
+
+							elif self.is_waiting_for_spectator:
+								pass
+
+							else:
+								self.is_waiting_for_spectator = True
+
+								await self.unlock_processing_event(ws_idx)
+
+								loop = asyncio.get_running_loop()
+								await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
+
+								self.is_waiting_for_spectator = False
+								await self.train()
+
+				await self.unlock_processing_event(ws_idx)
+
+			elif self.mode == MultiAgentEnv.ModelModes.infer:
+				if not hasattr(ws, 'connected'):
+					ws.connected = True
+
+					updateEnvironmentSettings(msg)
+
+		elif msg['tag'] == 'updateLobbies':
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				if not hasattr(ws, 'connected'):
+					servers = msg['data']
+					for server in servers:
+						if (
+							hasattr(self.ws_list[0], 'connected') and self.ws_list[0].connected and
+							hasattr(self.ws_list[0], 'username') and server['host'] == self.ws_list[0].username
+						):
+							await ws.send(json.dumps({
+								'tag': 'joinLobby',
+								'data': server,
+								'timestamp': int(time.time() * 1000)
+							}))
+							return
+
+			elif self.mode == MultiAgentEnv.ModelModes.infer:
+				if not hasattr(ws, 'connected'):
+					servers = msg['data']
+					for server in servers:
+						if (
+							hasattr(self.args, 'lobby') and self.args.lobby == server['name'] and
+							hasattr(self.args, 'host') and self.args.host == server['host']
+						):
+							await ws.send(json.dumps({
+								'tag': 'joinLobby',
+								'data': server,
+								'timestamp': int(time.time() * 1000)
+							}))
+
+							await self.unlock_processing_event(ws_idx)
+							return
+
+					await asyncio.sleep(2)
+					await ws.send(json.dumps({
+						'tag': 'getLobbies',
+						'timestamp': int(time.time() * 1000)
+					}))
+
+		elif msg['tag'] == 'updateGUI':
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				# No Longer Collecting Data
+				if not self.is_rollout:
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				updateEnvironmentSettings(msg)
+
+				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+				current_frame = msg['data']['gameData']['currentFrame']
+
+				# Update Internals From Message
+				prev_state = copy.deepcopy(self._latest_state[ws_idx])
+				prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
+				self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
+
+				self.cleanup_acknowledged_actions(ws_idx, current_frame)
+				found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
+
+				# Nothing Happened -> Return
+				if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				# Reward Calculation
+				if prev_state is not None and len(self._episode_rewards[ws_idx]) > 0:
+					reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
+
+					self._episode_rewards[ws_idx][-1] += reward
+
+					console_listeners.broadcast_message(json.dumps({
+						'tag': 'receiveCommand',
+						'data': {
+							'id': console_listeners.idx_to_name[ws_idx],
+							'msg': ['=== reward ===\n' + f'Transition Reward [{reward}]\nCumulative Reward [{self._episode_rewards[ws_idx][-1]}]'],
+							'status': 1
+						}
+					}))
+
+				# Episode Completion + Reset
+				game_state = self._latest_observation[ws_idx]['gameState']
+				done = game_state in {'LEADERBOARD', 'SCORE'}
+
+				if (done or (self._episode_ts[ws_idx] >= self.max_timesteps_per_episode)) and self._episode_ts[ws_idx] > 0:
+					self.end_episode(ws_idx)
+
+				if done:
+					if ws_idx == 0 and self.is_rollout:
+						self._play_history =	[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
+						self._leader_history =	[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
+
+						total_timesteps = sum(self._batch_ts)
+						target_timesteps = self.timesteps_per_batch * self.num_agents
+
+						total_episodes = sum(len(rewards) for rewards in self._batch_rewards)
+						ongoing_episodes = sum(1 for ts in self._episode_ts if ts > 0)
+
+						agent_stats = ' | '.join([
+						f'A{i}:{self._batch_ts[i]}ts/{len(self._batch_rewards[i])}ep'
+							for i in range(self.num_agents)
+						])
+
+						status_msg = (
+							f'Progress: {total_timesteps}/{target_timesteps} | '
+							f'{total_episodes}+{ongoing_episodes} episodes'
+						)
+						detail_msg = f'{agent_stats}'
+
+						await ws.send(json.dumps({
+							'tag': 'sendChat',
+							'data': status_msg,
+							'timestamp': int(time.time() * 1000),
+						}));
+
+						await ws.send(json.dumps({
+							'tag': 'sendChat',
+							'data': detail_msg,
+							'timestamp': int(time.time() * 1000),
+						}));
+
+						self._rollout_progressbar.n = sum(self._batch_ts)
+						self._rollout_progressbar.refresh()
+
+						await ws.send(json.dumps({
+							'tag': 'sendCommand',
+							'data': 'DEAL',
+							'timestamp': int(time.time() * 1000),
+							'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
+						}))
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				console_listeners.broadcast_message(json.dumps({
+					'tag': 'receiveCommand',
+					'data': {
+						'id': console_listeners.idx_to_name[ws_idx],
+						'msg': [f'=== self._latest_observation[ws_idx] ===\n' + json.dumps(self._latest_observation[ws_idx])],
+						'status': 0
+					}
+				}))
+				console_listeners.broadcast_message(json.dumps({
+					'tag': 'receiveCommand',
+					'data': {
+						'id': console_listeners.idx_to_name[ws_idx],
+						'msg': [f'gameState: {self._latest_observation[ws_idx]["gameState"]} | needToAct: {self._latest_observation[ws_idx]["needToAct"][turn_idx]}'],
+						'status': 1
+					}
+				}))
+
+				# Needs to Act -> Make Action
+				if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
+					console_listeners.broadcast_message(json.dumps({
+						'tag': 'receiveCommand',
+						'data': {
+							'id': console_listeners.idx_to_name[ws_idx],
+							'msg': [f'NEED TO ACT -- batch {self._batch_ts[ws_idx]}/{self.timesteps_per_batch} | episode {self._episode_ts[ws_idx]}/{self.max_timesteps_per_episode}'],
+							'status': 0
+						}
+					}))
+					console_listeners.broadcast_message(json.dumps({
+						'tag': 'receiveCommand',
+						'data': {
+							'id': console_listeners.idx_to_name[ws_idx],
+							'msg': [f'=== self._latest_state[ws_idx] ===\n' + json.dumps({k: v.tolist() if type(v) == np.ndarray else v for k, v in self._latest_state[ws_idx].items()})],
+							'status': 1
+						}
+					}))
+
+					if self._batch_ts[ws_idx] >= 0 and self._batch_ts[ws_idx] < self.timesteps_per_batch:
+
+						if self._episode_ts[ws_idx] < 0:
+							self._episode_rewards[ws_idx] = np.empty(0)
+							self._episode_ts[ws_idx] = 0
+
+						elif self._episode_ts[ws_idx] >= self.max_timesteps_per_episode:
+							self._episode_rewards[ws_idx] = np.empty(0)
+							self._episode_ts[ws_idx] = 0
+
+							# Episode Complete
+							await ws.send(json.dumps({
+								'tag': 'sendCommand',
+								'data': 'EXIT',
+								'timestamp': int(time.time() * 1000),
+								'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
+							}))
+							await self.unlock_processing_event(ws_idx)
+							return
+
+						# Skip Action if Waiting for ACK
+						if self.is_waiting_for_ack(ws_idx, current_frame):
+							await self.unlock_processing_event(ws_idx)
+							return
+
+						# Batch Full
+						if self._batch_ts[ws_idx] + 1 >= self.timesteps_per_batch:
+							self.is_rollout = False
+							self.is_training = True
+							for _ws_idx in range(self.num_agents):
+								self.end_episode(_ws_idx)
+
+							await ws.send(json.dumps({
+								'tag': 'sendCommand',
+								'data': 'EXIT',
+								'timestamp': int(time.time() * 1000),
+								'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
+							}))
+
+							self._rollout_progressbar.close()
+							asyncio.create_task(self.train_post_rollout())
+
+							await self.unlock_processing_event(ws_idx)
+							return
+
+						with torch.no_grad():
+							actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
+
+							if actor_module_type == '':
+								await self.unlock_processing_event(ws_idx)
+								return
+
+							actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
+
+							console_listeners.broadcast_message(json.dumps({
+								'tag': 'receiveCommand',
+								'data': {
+									'id': console_listeners.idx_to_name[ws_idx],
+									'msg': [f'=== actions | log_probs ({self._latest_observation[ws_idx]["gameState"]}) ===\n' + json.dumps(actions.tolist()) + '\n' + json.dumps(log_probs.tolist())],
+									'status': 1
+								}
+							}))
+
+							self._batch_states[ws_idx] = torch.concatenate((self._batch_states[ws_idx], inputs), dim = 0)
+							self._batch_actions[ws_idx] = torch.concatenate((self._batch_actions[ws_idx], actions), dim = 0)
+							self._batch_action_masks[ws_idx] = torch.concatenate((self._batch_action_masks[ws_idx], mask), dim = 0)
+							self._batch_log_probs[ws_idx] = torch.concatenate((self._batch_log_probs[ws_idx], log_probs), dim = 0)
+							self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([0.0])), axis = 0)
+
+						self._batch_ts[ws_idx] += 1
+						self._episode_ts[ws_idx] += 1
+
+						await asyncio.sleep(0.1)
+						await self.act(actions[0], ws_idx, turn_idx)
+
+			elif self.mode == MultiAgentEnv.ModelModes.infer:
+				updateEnvironmentSettings(msg)
+
+				# Spectator or Not In Game
+				if ws.username not in GAME_SETTINGS['turn_order']:
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+				current_frame = msg['data']['gameData']['currentFrame']
+
+				# Update Internals From Message
+				prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
+				self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
+
+				self.cleanup_acknowledged_actions(ws_idx, current_frame)
+				found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
+
+				# Nothing Happened -> Return
+				if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				# Game Ended
+				game_state = self._latest_observation[ws_idx]['gameState']
+				done = game_state in {'LEADERBOARD', 'SCORE'}
+
+				if done:
+					self.reset_game_state(ws_idx)
+					await self.unlock_processing_event(ws_idx)
+					return
+
+				# Needs to Act -> Make Action
+				if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
+
+					# Skip Action if Waiting for ACK
+					if self.is_waiting_for_ack(ws_idx, current_frame):
+						await self.unlock_processing_event(ws_idx)
+						return
+
+					actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
+
+					if actor_module_type == '':
+						await self.unlock_processing_event(ws_idx)
+						return
+
+					actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
+					await self.act(actions[0], ws_idx, turn_idx)
+
+		elif msg['tag'] == 'receiveCommand':
+			console_listeners.broadcast_message(json.dumps({
+				'tag': 'receiveCommand',
+				'data': {
+					'id': console_listeners.idx_to_name[ws_idx],
+					'msg': [f'=== receiveCommand ===\n{msg["data"]}'],
+					'status': 1
+				}
+			}))
+			self.update_latest_from_console_observation(msg['data'], ws_idx)
+
+		elif msg['tag'] == 'commandNACK':
+			console_listeners.broadcast_message(json.dumps({
+				'tag': 'receiveCommand',
+				'data': {
+					'id': console_listeners.idx_to_name[ws_idx],
+					'msg': [f'=== commandNACK ===\n{msg["data"]}'],
+					'status': 0
+				}
+			}))
+			try:
+				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
+				self._latest_actions[ws_idx].pop(found_idx)
+
 				if self.mode == MultiAgentEnv.ModelModes.train:
-					await self._handle_message_train(ws_idx, message)
-				elif self.mode == MultiAgentEnv.ModelModes.infer:
-					await self._handle_message_infer(ws_idx, message)
+					# Rollback rejected command
+					if self._batch_states[ws_idx].shape[0] > 0:
+						self._batch_states[ws_idx] = self._batch_states[ws_idx][:-1]
+						self._batch_actions[ws_idx] = self._batch_actions[ws_idx][:-1]
+						self._batch_action_masks[ws_idx] = self._batch_action_masks[ws_idx][:-1]
+						self._batch_log_probs[ws_idx] = self._batch_log_probs[ws_idx][:-1]
+
+						if self._episode_rewards[ws_idx].shape[0] > 0:
+							self._episode_rewards[ws_idx] = self._episode_rewards[ws_idx][:-1]
+
+						self._batch_ts[ws_idx] -= 1
+						self._episode_ts[ws_idx] -= 1
+
+			except StopIteration:
+				pass
+
+		elif msg['tag'] == 'commandACK':
+			try:
+				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
+				self._latest_actions[ws_idx][found_idx]['newFrame'] = msg['data']['newFrame']
+				self._latest_actions[ws_idx][found_idx]['ack'] = 1
+
+			except StopIteration:
+				pass
+
+			console_listeners.broadcast_message(json.dumps({
+				'tag': 'receiveCommand',
+				'data': {
+					'id': console_listeners.idx_to_name[ws_idx],
+					'msg': [f'=== commandACK ===\n{msg["data"]}', json.dumps(self._latest_actions[ws_idx])],
+					'status': 1
+				}
+			}))
+
+		await self.unlock_processing_event(ws_idx)
 
 	def update_latest_from_gui_observation(self, observation: dict, ws_idx: int, turn_idx: int) -> None:
 		trick: int = round(len(observation['stacks'][0]) / len(observation['turnOrder']))
@@ -584,434 +1093,6 @@ class MultiAgentEnv:
 			await asyncio.sleep(0.1)
 
 		return False
-
-	# ========== TRAINING MODE ==========
-
-	async def connect_train(self, url: str) -> None:
-		global console_listeners
-
-		self.mode = MultiAgentEnv.ModelModes.train
-
-		async def connect_ws(ws_idx: int) -> None:
-			async with connect(url) as ws:
-				self.ws_list[ws_idx] = ws
-
-				console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
-
-				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
-				await self._listen(ws_idx)
-
-		tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
-		await asyncio.gather(*tasks)
-
-	async def _handle_message_train(self, ws_idx: int, message: str) -> None:
-		global console_listeners
-		ws = self.ws_list[ws_idx]
-
-		self._is_processing_event[ws_idx] = True
-
-		msg = json.loads(message, object_hook = json_parser)
-		# print(ws_idx, msg)
-
-		if msg['tag'] == 'receiveSessionID':
-			ws.sessionID =  msg['data']['sessionID']
-			await ws.send(json.dumps({
-				'tag': 'requestUsername',
-				'data': 'bot',
-				'timestamp': int(time.time() * 1000)
-			}))
-
-		elif msg['tag'] == 'receiveUsername':
-			ws.username = msg['data']
-			if ws_idx == 0:
-				await ws.send(json.dumps({
-					'tag': 'createLobby',
-					'data': {
-						'name': 'training',
-						'time': int(time.time() * 1000),
-						'creator': ws.username,
-						'host': ws.username
-					},
-					'timestamp': int(time.time() * 1000)
-				}))
-
-		elif msg['tag'] == 'createdLobby':
-			await ws.send(json.dumps({
-				'tag': 'joinLobby',
-				'data': msg['data'],
-				'timestamp': int(time.time() * 1000)
-			}))
-
-		elif msg['tag'] == 'showLobby':
-			self.reset_game_state(ws_idx)
-
-			if not hasattr(ws, 'connected'):
-				ws.connected = True
-
-				if ws_idx == 0:
-					settings = copy.deepcopy(msg['data']['gameData']['settings'])
-					settings['spectatorPolicy'] = 'constant'
-					settings['expose3'] = True
-					settings['zhuYangManJuan'] = True
-					await ws.send(json.dumps({
-						'tag': 'updateLobbySettings',
-						'data': {'settings': settings},
-						'timestamp': int(time.time() * 1000)
-					}))
-
-					updateEnvironmentSettings(msg)
-
-					self._play_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']), GAME_SETTINGS['NUM_PLAYERS']), -1, dtype = np.int8) for _ in range(self.num_agents)]
-					self._leader_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']),), -1, dtype = np.int8) for _ in range(self.num_agents)]
-
-					for ws_i in self.ws_list[1:]:
-						await ws_i.send(json.dumps({
-							'tag': 'getLobbies',
-							'timestamp': int(time.time() * 1000)
-						}))
-
-					await self.unlock_processing_event(ws_idx)
-
-					while not all(hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected for i in range(self.num_agents)):
-						await asyncio.sleep(0.1)
-
-					if hasattr(self.args, 'spectate') and self.args.spectate:
-						self.is_waiting_for_spectator = True
-
-						loop = asyncio.get_running_loop()
-						await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
-
-						self.is_waiting_for_spectator = False
-
-					await self.train()
-					return
-
-			else:
-				if ws_idx == 0:
-					if len(msg['data']['connected']) == GAME_SETTINGS['NUM_PLAYERS']:
-						if self.is_rollout:
-							await ws.send(json.dumps({
-								'tag': 'startGame',
-								'timestamp': int(time.time() * 1000)
-							}))
-
-						elif self.is_training:
-							pass
-
-						elif self.is_waiting_for_spectator:
-							pass
-
-						else:
-							self.is_waiting_for_spectator = True
-
-							await self.unlock_processing_event(ws_idx)
-
-							loop = asyncio.get_running_loop()
-							await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
-
-							self.is_waiting_for_spectator = False
-							await self.train()
-
-			await self.unlock_processing_event(ws_idx)
-
-		elif msg['tag'] == 'updateLobbies':
-			if not hasattr(ws, 'connected'):
-				servers = msg['data']
-				for server in servers:
-					if (
-						hasattr(self.ws_list[0], 'connected') and self.ws_list[0].connected and
-						hasattr(self.ws_list[0], 'username') and server['host'] == self.ws_list[0].username
-					):
-						await ws.send(json.dumps({
-							'tag': 'joinLobby',
-							'data': server,
-							'timestamp': int(time.time() * 1000)
-						}))
-						return
-
-		elif msg['tag'] == 'updateGUI':
-
-			# No Longer Collecting Data
-			if not self.is_rollout:
-				await self.unlock_processing_event(ws_idx)
-				return
-
-			updateEnvironmentSettings(msg)
-
-			turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
-			current_frame = msg['data']['gameData']['currentFrame']
-
-			# Update Internals From Message
-			prev_state = copy.deepcopy(self._latest_state[ws_idx])
-			prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
-			self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
-
-			self.cleanup_acknowledged_actions(ws_idx, current_frame)
-			found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
-
-			# Nothing Happened -> Return
-			if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
-				await self.unlock_processing_event(ws_idx)
-				return
-
-			# Reward Calculation
-			if prev_state is not None and len(self._episode_rewards[ws_idx]) > 0:
-				reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
-
-				self._episode_rewards[ws_idx][-1] += reward
-
-				console_listeners.broadcast_message(json.dumps({
-					'tag': 'receiveCommand',
-					'data': {
-						'id': console_listeners.idx_to_name[ws_idx],
-						'msg': ['=== reward ===\n' + f'Transition Reward [{reward}]\nCumulative Reward [{self._episode_rewards[ws_idx][-1]}]'],
-						'status': 1
-					}
-				}))
-
-			# frame_advanced = (
-			# 	prev_observation is not None and
-			# 	msg['data']['gameData']['currentFrame'] > prev_observation['currentFrame'] and
-			# 	found_matching_command
-			# )
-
-			# reward = None
-
-			# if prev_state is not None and frame_advanced:
-			# 	reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
-			# 	self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([reward])), axis = 0)
-
-			# if prev_state is not None and not frame_advanced:
-			# 	reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
-
-			# 	if len(self._episode_rewards[ws_idx]) > 0:
-			# 		self._episode_rewards[ws_idx][-1] += reward
-			# 	else:
-			# 		self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([reward])), axis = 0)
-
-			# Episode Completion + Reset
-			game_state = self._latest_observation[ws_idx]['gameState']
-			done = game_state in {'LEADERBOARD', 'SCORE'}
-
-			if (done or (self._episode_ts[ws_idx] >= self.max_timesteps_per_episode)) and self._episode_ts[ws_idx] > 0:
-				self.end_episode(ws_idx)
-
-			if done:
-				if ws_idx == 0 and self.is_rollout:
-					self._play_history =	[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
-					self._leader_history =	[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
-
-					total_timesteps = sum(self._batch_ts)
-					target_timesteps = self.timesteps_per_batch * self.num_agents
-
-					total_episodes = sum(len(rewards) for rewards in self._batch_rewards)
-					ongoing_episodes = sum(1 for ts in self._episode_ts if ts > 0)
-
-					agent_stats = ' | '.join([
-					f'A{i}:{self._batch_ts[i]}ts/{len(self._batch_rewards[i])}ep'
-						for i in range(self.num_agents)
-					])
-
-					status_msg = (
-						f'Progress: {total_timesteps}/{target_timesteps} | '
-						f'{total_episodes}+{ongoing_episodes} episodes'
-					)
-					detail_msg = f'{agent_stats}'
-
-					await ws.send(json.dumps({
-						'tag': 'sendChat',
-						'data': status_msg,
-						'timestamp': int(time.time() * 1000),
-					}));
-
-					await ws.send(json.dumps({
-						'tag': 'sendChat',
-						'data': detail_msg,
-						'timestamp': int(time.time() * 1000),
-					}));
-
-					self._rollout_progressbar.n = sum(self._batch_ts)
-					self._rollout_progressbar.refresh()
-
-					await ws.send(json.dumps({
-						'tag': 'sendCommand',
-						'data': 'DEAL',
-						'timestamp': int(time.time() * 1000),
-						'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-					}))
-				await self.unlock_processing_event(ws_idx)
-				return
-
-			console_listeners.broadcast_message(json.dumps({
-				'tag': 'receiveCommand',
-				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
-					'msg': [f'=== self._latest_observation[ws_idx] ===\n' + json.dumps(self._latest_observation[ws_idx])],
-					'status': 0
-				}
-			}))
-			console_listeners.broadcast_message(json.dumps({
-				'tag': 'receiveCommand',
-				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
-					'msg': [f'gameState: {self._latest_observation[ws_idx]["gameState"]} | needToAct: {self._latest_observation[ws_idx]["needToAct"][turn_idx]}'],
-					'status': 1
-				}
-			}))
-
-			# Needs to Act -> Make Action
-			if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
-				console_listeners.broadcast_message(json.dumps({
-					'tag': 'receiveCommand',
-					'data': {
-						'id': console_listeners.idx_to_name[ws_idx],
-						'msg': [f'NEED TO ACT -- batch {self._batch_ts[ws_idx]}/{self.timesteps_per_batch} | episode {self._episode_ts[ws_idx]}/{self.max_timesteps_per_episode}'],
-						'status': 0
-					}
-				}))
-				console_listeners.broadcast_message(json.dumps({
-					'tag': 'receiveCommand',
-					'data': {
-						'id': console_listeners.idx_to_name[ws_idx],
-						'msg': [f'=== self._latest_state[ws_idx] ===\n' + json.dumps({k: v.tolist() if type(v) == np.ndarray else v for k, v in self._latest_state[ws_idx].items()})],
-						'status': 1
-					}
-				}))
-
-				if self._batch_ts[ws_idx] >= 0 and self._batch_ts[ws_idx] < self.timesteps_per_batch:
-
-					if self._episode_ts[ws_idx] < 0:
-						self._episode_rewards[ws_idx] = np.empty(0)
-						self._episode_ts[ws_idx] = 0
-
-					elif self._episode_ts[ws_idx] >= self.max_timesteps_per_episode:
-						self._episode_rewards[ws_idx] = np.empty(0)
-						self._episode_ts[ws_idx] = 0
-
-						# Episode Complete
-						await ws.send(json.dumps({
-							'tag': 'sendCommand',
-							'data': 'EXIT',
-							'timestamp': int(time.time() * 1000),
-							'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-						}))
-						await self.unlock_processing_event(ws_idx)
-						return
-
-					# Skip Action if Waiting for ACK
-					if self.is_waiting_for_ack(ws_idx, current_frame):
-						await self.unlock_processing_event(ws_idx)
-						return
-
-					# Batch Full
-					if self._batch_ts[ws_idx] + 1 >= self.timesteps_per_batch:
-						self.is_rollout = False
-						self.is_training = True
-						for _ws_idx in range(self.num_agents):
-							self.end_episode(_ws_idx)
-
-						await ws.send(json.dumps({
-							'tag': 'sendCommand',
-							'data': 'EXIT',
-							'timestamp': int(time.time() * 1000),
-							'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-						}))
-
-						self._rollout_progressbar.close()
-						asyncio.create_task(self.train_post_rollout())
-
-						await self.unlock_processing_event(ws_idx)
-						return
-
-					with torch.no_grad():
-						actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
-
-						if actor_module_type == '':
-							await self.unlock_processing_event(ws_idx)
-							return
-
-						actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
-
-						console_listeners.broadcast_message(json.dumps({
-							'tag': 'receiveCommand',
-							'data': {
-								'id': console_listeners.idx_to_name[ws_idx],
-								'msg': [f'=== actions | log_probs ({self._latest_observation[ws_idx]["gameState"]}) ===\n' + json.dumps(actions.tolist()) + '\n' + json.dumps(log_probs.tolist())],
-								'status': 1
-							}
-						}))
-
-						self._batch_states[ws_idx] = torch.concatenate((self._batch_states[ws_idx], inputs), dim = 0)
-						self._batch_actions[ws_idx] = torch.concatenate((self._batch_actions[ws_idx], actions), dim = 0)
-						self._batch_action_masks[ws_idx] = torch.concatenate((self._batch_action_masks[ws_idx], mask), dim = 0)
-						self._batch_log_probs[ws_idx] = torch.concatenate((self._batch_log_probs[ws_idx], log_probs), dim = 0)
-						self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([0.0])), axis = 0)
-
-					self._batch_ts[ws_idx] += 1
-					self._episode_ts[ws_idx] += 1
-
-					await asyncio.sleep(0.1)
-					await self.act(actions[0], ws_idx, turn_idx)
-
-		elif msg['tag'] == 'receiveCommand':
-			console_listeners.broadcast_message(json.dumps({
-				'tag': 'receiveCommand',
-				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
-					'msg': [f'=== receiveCommand ===\n{msg["data"]}'],
-					'status': 1
-				}
-			}))
-			self.update_latest_from_console_observation(msg['data'], ws_idx)
-
-		elif msg['tag'] == 'commandNACK':
-			console_listeners.broadcast_message(json.dumps({
-				'tag': 'receiveCommand',
-				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
-					'msg': [f'=== commandNACK ===\n{msg["data"]}'],
-					'status': 0
-				}
-			}))
-			try:
-				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
-				self._latest_actions[ws_idx].pop(found_idx)
-
-				# Rollback rejected command
-				if self._batch_states[ws_idx].shape[0] > 0:
-					self._batch_states[ws_idx] = self._batch_states[ws_idx][:-1]
-					self._batch_actions[ws_idx] = self._batch_actions[ws_idx][:-1]
-					self._batch_action_masks[ws_idx] = self._batch_action_masks[ws_idx][:-1]
-					self._batch_log_probs[ws_idx] = self._batch_log_probs[ws_idx][:-1]
-
-					if self._episode_rewards[ws_idx].shape[0] > 0:
-						self._episode_rewards[ws_idx] = self._episode_rewards[ws_idx][:-1]
-
-					self._batch_ts[ws_idx] -= 1
-					self._episode_ts[ws_idx] -= 1
-
-			except StopIteration:
-				pass
-
-		elif msg['tag'] == 'commandACK':
-			try:
-				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
-				self._latest_actions[ws_idx][found_idx]['newFrame'] = msg['data']['newFrame']
-				self._latest_actions[ws_idx][found_idx]['ack'] = 1
-
-			except StopIteration:
-				pass
-
-			console_listeners.broadcast_message(json.dumps({
-				'tag': 'receiveCommand',
-				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
-					'msg': [f'=== commandACK ===\n{msg["data"]}', json.dumps(self._latest_actions[ws_idx])],
-					'status': 1
-				}
-			}))
-
-		await self.unlock_processing_event(ws_idx)
 
 	def end_episode(self, ws_idx: int) -> None:
 		self._batch_lens[ws_idx] = np.concatenate((self._batch_lens[ws_idx], np.array([self._episode_ts[ws_idx]])), axis = 0)
@@ -1227,149 +1308,6 @@ class MultiAgentEnv:
 			all_reward_to_gos.append(batch_reward_to_gos)
 
 		return torch.tensor(np.concatenate(all_reward_to_gos, axis = 0))
-
-	# ========== INFERENCE MODE ==========
-
-	async def connect_infer(self, url: str) -> None:
-		global console_listeners
-
-		self.mode = MultiAgentEnv.ModelModes.infer
-		self.actor.eval()
-
-		# Only One Agent
-		ws_idx = 0
-		async with connect(url) as ws:
-			self.ws_list[ws_idx] = ws
-
-			console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
-
-			await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
-			await self._listen(ws_idx)
-
-	async def _handle_message_infer(self, ws_idx: int, message: str) -> None:
-		ws = self.ws_list[ws_idx]
-
-		self._is_processing_event[ws_idx] = True
-
-		msg = json.loads(message, object_hook = json_parser)
-
-		if msg['tag'] == 'receiveSessionID':
-			ws.sessionID =  msg['data']['sessionID']
-			await ws.send(json.dumps({
-				'tag': 'requestUsername',
-				'data': 'bot',
-				'timestamp': int(time.time() * 1000)
-			}))
-
-		elif msg['tag'] == 'receiveUsername':
-			ws.username = msg['data']
-			if ws_idx == 0:
-				await ws.send(json.dumps({
-					'tag': 'getLobbies',
-					'timestamp': int(time.time() * 1000)
-				}))
-
-		elif msg['tag'] == 'updateLobbies':
-			if not hasattr(ws, 'connected'):
-				servers = msg['data']
-				for server in servers:
-					if (
-						hasattr(self.args, 'lobby') and self.args.lobby == server['name'] and
-						hasattr(self.args, 'host') and self.args.host == server['host']
-					):
-						await ws.send(json.dumps({
-							'tag': 'joinLobby',
-							'data': server,
-							'timestamp': int(time.time() * 1000)
-						}))
-
-						await self.unlock_processing_event(ws_idx)
-						return
-
-				await asyncio.sleep(2)
-				await ws.send(json.dumps({
-					'tag': 'getLobbies',
-					'timestamp': int(time.time() * 1000)
-				}))
-
-		elif msg['tag'] == 'showLobby':
-			self.reset_game_state(ws_idx)
-
-			if not hasattr(ws, 'connected'):
-				ws.connected = True
-
-				updateEnvironmentSettings(msg)
-
-		elif msg['tag'] == 'updateGUI':
-			updateEnvironmentSettings(msg)
-
-			# Spectator or Not In Game
-			if ws.username not in GAME_SETTINGS['turn_order']:
-				await self.unlock_processing_event(ws_idx)
-				return
-
-			turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
-			current_frame = msg['data']['gameData']['currentFrame']
-
-			# Update Internals From Message
-			prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
-			self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
-
-			self.cleanup_acknowledged_actions(ws_idx, current_frame)
-			found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
-
-			# Nothing Happened -> Return
-			if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
-				await self.unlock_processing_event(ws_idx)
-				return
-
-			# Game Ended
-			game_state = self._latest_observation[ws_idx]['gameState']
-			done = game_state in {'LEADERBOARD', 'SCORE'}
-
-			if done:
-				self.reset_game_state(ws_idx)
-				await self.unlock_processing_event(ws_idx)
-				return
-
-			# Needs to Act -> Make Action
-			if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
-
-				# Skip Action if Waiting for ACK
-				if self.is_waiting_for_ack(ws_idx, current_frame):
-					await self.unlock_processing_event(ws_idx)
-					return
-
-				actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
-
-				if actor_module_type == '':
-					await self.unlock_processing_event(ws_idx)
-					return
-
-				actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
-				await self.act(actions[0], ws_idx, turn_idx)
-
-		elif msg['tag'] == 'receiveCommand':
-			self.update_latest_from_console_observation(msg['data'], ws_idx)
-
-		elif msg['tag'] == 'commandNACK':
-			try:
-				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
-				self._latest_actions[ws_idx].pop(found_idx)
-
-			except StopIteration:
-				pass
-
-		elif msg['tag'] == 'commandACK':
-			try:
-				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
-				self._latest_actions[ws_idx][found_idx]['newFrame'] = msg['data']['newFrame']
-				self._latest_actions[ws_idx][found_idx]['ack'] = 1
-
-			except StopIteration:
-				pass
-
-		await self.unlock_processing_event(ws_idx)
 
 class EloRatingSystem:
 
@@ -1604,12 +1542,21 @@ async def main() -> None:
 				warnings.warn('No checkpoint loaded; bot will use random initialization')
 
 	if args.train:
+		env.set_mode(MultiAgentEnv.ModelMode.train)
 		print('Starting training mode...')
-		await env.connect_train(args.url)
 
 	elif args.infer:
+		env.set_mode(MultiAgentEnv.ModelMode.infer)
 		print('Starting inference mode...')
-		await env.connect_infer(args.url)
+
+	elif args.eval:
+		env.set_mode(MultiAgentEnv.ModelMode.eval)
+		print('Starting evaluation mode...')
+
+	else:
+		raise ValueError('No mode specified')
+
+	await env.connect(args.url)
 
 if __name__ == '__main__':
 	asyncio.run(main())
