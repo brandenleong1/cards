@@ -1606,6 +1606,19 @@ class MultiAgentEnv:
 
 			# Matchup Complete
 			self.eval_total_matches += 1
+			self.print_leaderboard()
+
+	def print_leaderboard(self) -> None:
+		leaderboard = self.elo_rating_system.get_leaderboard()
+		print(f'')
+		print(f'{"=" * 60}')
+		print(f' ELO LEADERBOARD (after {self.eval_total_games} games)')
+		print(f' {"Rank":<6}{"Model":<35}{"ELO":<8}{"Games":<8}')
+		print(f' {"-" * 58} ')
+		for rank, (path, rating, games) in enumerate(leaderboard, 1):
+			name = os.path.basename(path)
+			print(f' {rank:<6}{name:<35}{rating:<8.2f}{games:<8}')
+		print(f'{"=" * 60}')
 
 	def save_all_ratings(self) -> None:
 		saved_ratings_count = 0
