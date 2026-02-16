@@ -329,12 +329,12 @@ class MultiAgentEnv:
 		self.eval_total_matches: int =				0
 		self.eval_total_games: int =				0
 
-		self.action_delay: float =					0.1
+		self.action_delay: float =					0.01
 
 		self._init_hyperparameters()
 
 	def _init_hyperparameters(self) -> None:
-		self.timesteps_per_batch: int =				256
+		self.timesteps_per_batch: int =				2048
 		self.max_timesteps_per_episode: int =		200
 
 		# PPO Parameters
@@ -342,7 +342,7 @@ class MultiAgentEnv:
 		self.gae_lambda: float =					0.95
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				10
-		self.mini_batch_size: int =					64
+		self.mini_batch_size: int =					256
 		self.actor_lr: float =						1e-4
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
@@ -393,12 +393,12 @@ class MultiAgentEnv:
 
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (128, 128, 13)),
-			'PLAY': ActorNN('PLAY', (128, 128, 13))
+			'SHOW': ActorNN('SHOW', (256, 256, 128, 13)),
+			'PLAY': ActorNN('PLAY', (256, 256, 128, 13))
 		})
 
 	def create_critic(self) -> torch.nn.Module:
-		return CriticNN((128, 128))
+		return CriticNN((256, 256, 128))
 
 	def save_checkpoint(self) -> None:
 		checkpoint = {
