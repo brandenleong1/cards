@@ -10,6 +10,7 @@ import math
 import os
 import random
 import re
+import tempfile
 import time
 import urllib.parse
 import warnings
@@ -408,8 +409,17 @@ class MultiAgentEnv:
 			'training_history': self.training_history
 		}
 		path = os.path.join(self.args.save_dir, f'gong_zhu_player_{self.batch_num}.pt')
-		torch.save(checkpoint, path)
-		print(f'Saved checkpoint at [{os.path.abspath(path)}]')
+
+		fd, tmp_path = tempfile.mkstemp(dir = self.args.save_dir, suffix = '.pt.tmp')
+
+		try:
+			os.close(fd)
+			torch.save(checkpoint, tmp_path)
+			os.replace(tmp_path, path)
+			print(f'Saved checkpoint at [{os.path.abspath(path)}]')
+		except BaseException:
+			if os.path.exists(tmp_path):
+				os.remove(tmp_path)
 
 	def load_checkpoint(self, path: str) -> None:
 		checkpoint = torch.load(path, weights_only = False)
@@ -1644,17 +1654,16 @@ class EloRatingSystem:
 		model_path = os.path.abspath(model_path)
 
 		if model_path not in self.ratings.keys():
-			rating = self.load_rating(model_path)
-			self.ratings[model_path] = rating if rating is not None else self.initial_rating
-			self.games_played[model_path] = 0
+			self.load_rating(model_path)
 
 		return self.ratings[model_path]
 
-	def load_rating(self, model_path: str) -> float | None:
+	def load_rating(self, model_path: str) -> None:
 		model_path = os.path.abspath(model_path)
 		try:
 			checkpoint = torch.load(model_path, weights_only = False)
-			return checkpoint.get('elo_rating', None)
+			self.ratings[model_path] = checkpoint.get('elo_rating', self.initial_rating)
+			self.games_played[model_path] = checkpoint.get('elo_games_played', 0)
 		except Exception as e:
 			warnings.warn(f'Could not load rating from [{model_path}]: {e}')
 			return None
@@ -1664,6 +1673,7 @@ class EloRatingSystem:
 		try:
 			checkpoint = torch.load(model_path, weights_only = False)
 			checkpoint['elo_rating'] = self.ratings[model_path]
+			checkpoint['elo_games_played'] = self.games_played[model_path]
 			torch.save(checkpoint, model_path)
 		except Exception as e:
 			warnings.warn(f'Could not save rating to [{model_path}]: {e}')
