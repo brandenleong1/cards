@@ -328,18 +328,20 @@ class MultiAgentEnv:
 		self.eval_total_matches: int =				0
 		self.eval_total_games: int =				0
 
-		self.action_delay: float =					0.005
+		self.action_delay: float =					0.001
 
 	def _init_hyperparameters(self) -> None:
 		self.timesteps_per_batch: int =				8096
 		self.max_timesteps_per_episode: int =		200
 
+		self.reward_scale: float =					1.0 / 10
+
 		# PPO Parameters
-		self.gamma: float =							0.99
+		self.gamma: float =							0.95
 		self.gae_lambda: float =					0.95
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				10
-		self.mini_batch_size: int =					256
+		self.mini_batch_size: int =					512
 		self.actor_lr: float =						1e-4
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
@@ -1264,7 +1266,7 @@ class MultiAgentEnv:
 	@staticmethod
 	def get_reward_from_state_transition(old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
 		raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
-		return raw_reward / 100.0
+		return raw_reward * self.reward_scale
 
 	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
 		start_time = time.time()
@@ -1295,12 +1297,12 @@ class MultiAgentEnv:
 		self.load_opponent_models()
 
 		num_agents_training =			sum(1 for actor in self._opponent_actors if actor is None)
-		self._batch_size =				(self.timesteps_per_batch * self.num_agents) // num_agents_training
+		self._batch_size =				self.timesteps_per_batch // num_agents_training
 
 		self._batch_ts =				[0 for _ in range(self.num_agents)]
 		self._episode_ts =				[0 for _ in range(self.num_agents)]
 		self.is_rollout =				True
-		self._rollout_progressbar =		tqdm(range(self.timesteps_per_batch * self.num_agents), dynamic_ncols = True, desc = f'Batch {self.batch_num} Rollout')
+		self._rollout_progressbar =		tqdm(range(self.timesteps_per_batch), dynamic_ncols = True, desc = f'Batch {self.batch_num} Rollout')
 		self._rollout_progressbar.n =	0
 		self._rollout_progressbar.refresh()
 		self.actor.train()
