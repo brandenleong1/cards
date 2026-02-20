@@ -32,8 +32,6 @@ np.random.seed(0)
 random.seed(0)
 
 
-NUM_PLAYERS = 4
-
 GAME_SETTINGS = {
 	'NUM_PLAYERS':	4,
 	'NUM_CARDS':	52 * 1
@@ -175,9 +173,13 @@ class ActorNN(torch.nn.Module):
 			legal_cards.update(e for e in my_exposed if suit_lens[e // 13] == 1)
 
 		elif game_state in {'PLAY_1', 'PLAY_2', 'PLAY_3'}:
-			trick = np.where(state['leader_history'] != -1)[0][-1]
-			leader = state['leader_history'][trick]
-			trick_suit = state['play_history'][trick][leader] // 13
+			trick = np.where(np.count_nonzero(state['leader_history'], axis = 1) != 0)[0][-1]
+
+			assert np.count_nonzero(state['leader_history'][trick]) == 1
+			leader = np.argmax(state['leader_history'][trick])
+
+			assert np.count_nonzero(state['play_history'][trick][leader]) == 1
+			trick_suit = np.argmax(state['play_history'][trick][leader]) // 13
 
 			hand = np.where(state['hand'] == 1)[0]
 			filtered_hand = hand[hand // 13 == trick_suit]
@@ -349,6 +351,8 @@ class MultiAgentEnv:
 		self.max_grad_norm: float =					0.5
 
 	def reset(self) -> None:
+		num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
+
 		self.is_rollout: bool =											False
 		self.is_training: bool =										False
 		self.is_evaluating: bool =										False
@@ -358,8 +362,15 @@ class MultiAgentEnv:
 		self._latest_actions: list[list[dict[str, Any]]] =				[list()					for _ in range(self.num_agents)]
 		self._latest_reward: list[float | None] =						[None					for _ in range(self.num_agents)]
 
-		self._play_history: list[np.ndarray[np.int8]] =					[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
-		self._leader_history: list[np.ndarray[np.int8]] =				[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
+		self._play_history: list[np.ndarray[np.int8]] =					[np.zeros((
+																			num_tricks,
+																			GAME_SETTINGS['NUM_PLAYERS'],
+																			GAME_SETTINGS['NUM_CARDS']
+																		), dtype = np.int8)		for _ in range(self.num_agents)]
+		self._leader_history: list[np.ndarray[np.int8]] =				[np.zeros((
+																			num_tricks,
+																			GAME_SETTINGS['NUM_PLAYERS']
+																		), dtype = np.int8)		for _ in range(self.num_agents)]
 
 		self._opponent_actors: list[torch.nn.ModuleDict | None] =		[None					for _ in range(self.num_agents)]
 
@@ -386,8 +397,8 @@ class MultiAgentEnv:
 	def reset_game_state(self, ws_idx = int) -> None:
 		num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
 
-		self._play_history[ws_idx] =			np.full((num_tricks, NUM_PLAYERS), -1, dtype = np.int8)
-		self._leader_history[ws_idx] =			np.full((num_tricks,), -1, dtype = np.int8)
+		self._play_history[ws_idx] =			np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8)
+		self._leader_history[ws_idx] =			np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8)
 		self._latest_observation[ws_idx] =		None
 		self._latest_state[ws_idx] =			None
 		self._latest_actions[ws_idx] =			list()
@@ -412,6 +423,8 @@ class MultiAgentEnv:
 			'training_history': self.training_history
 		}
 		path = os.path.join(self.args.save_dir, f'gong_zhu_player_{self.batch_num}.pt')
+
+		os.makedirs(self.args.save_dir, exist_ok = True)
 
 		fd, tmp_path = tempfile.mkstemp(dir = self.args.save_dir, suffix = '.pt.tmp')
 
@@ -626,8 +639,9 @@ class MultiAgentEnv:
 
 						updateEnvironmentSettings(msg)
 
-						self._play_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']), GAME_SETTINGS['NUM_PLAYERS']), -1, dtype = np.int8) for _ in range(self.num_agents)]
-						self._leader_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']),), -1, dtype = np.int8) for _ in range(self.num_agents)]
+						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
+						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
+						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
 
 						for ws_i in self.ws_list[1:]:
 							await ws_i.send(json.dumps({
@@ -697,8 +711,9 @@ class MultiAgentEnv:
 
 						updateEnvironmentSettings(msg)
 
-						self._play_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']), GAME_SETTINGS['NUM_PLAYERS']), -1, dtype = np.int8) for _ in range(self.num_agents)]
-						self._leader_history =	[np.full((math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS']),), -1, dtype = np.int8) for _ in range(self.num_agents)]
+						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
+						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
+						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
 
 						for ws_i in self.ws_list[1:]:
 							await ws_i.send(json.dumps({
@@ -796,8 +811,9 @@ class MultiAgentEnv:
 
 				if done:
 					if ws_idx == 0 and self.is_rollout:
-						self._play_history =	[np.full((13, NUM_PLAYERS), -1, dtype = np.int8)	for _ in range(self.num_agents)]
-						self._leader_history =	[np.full((13,), -1, dtype = np.int8)				for _ in range(self.num_agents)]
+						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
+						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
+						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
 
 						total_timesteps = sum(self._batch_ts)
 						target_timesteps = self.timesteps_per_batch * self.num_agents
@@ -1136,11 +1152,18 @@ class MultiAgentEnv:
 		partial_state: dict[str, np.ndarray] = MultiAgentEnv.encode_observation(observation, turn_idx)
 
 		if observation['gameState'].startswith('PLAY_'):
-			self._leader_history[ws_idx][trick] = observation['turnFirstIdx']
+			self._leader_history[ws_idx][trick] = one_hot_encode(
+				size = GAME_SETTINGS['NUM_PLAYERS'],
+				arr = np.array([observation['turnFirstIdx']]),
+				dtype = np.int8
+			)
 
 			for i, hand in enumerate(observation['hands']):
-				if len(hand[3]) > 0:
-					self._play_history[ws_idx][trick][i] = hand[3][0]
+				self._play_history[ws_idx][trick][i] = one_hot_encode(
+					size = GAME_SETTINGS['NUM_CARDS'],
+					arr = np.array(hand[3]),
+					dtype = np.int8
+				)
 
 		state = partial_state | {'play_history': self._play_history[ws_idx], 'leader_history': self._leader_history[ws_idx]}
 
@@ -1164,7 +1187,11 @@ class MultiAgentEnv:
 					continue
 
 				player_idx: int = self._latest_observation[ws_idx]['turnOrder'].index(username)
-				self._play_history[ws_idx][trick][player_idx] = card_int
+				self._play_history[ws_idx][trick][player_idx] = one_hot_encode(
+					size = GAME_SETTINGS['NUM_CARDS'],
+					arr = np.array([card_int]),
+					dtype = np.int8
+				)
 
 	def cleanup_acknowledged_actions(self, ws_idx: int, current_frame: int) -> None:
 		self._latest_actions[ws_idx] = [
@@ -1270,7 +1297,11 @@ class MultiAgentEnv:
 
 		scores: np.ndarray = np.array(observation['scores'], dtype = np.float32)[:, 1]
 
-		current_trick: np.ndarray = np.array([(hand[3][0] if len(hand[3]) else -1) for hand in observation['hands']], dtype = np.float32)
+		current_trick: np.ndarray = np.array([one_hot_encode(
+			size = GAME_SETTINGS['NUM_CARDS'],
+			arr = [hand[3][0] for hand in observation['hands'] if len(hand[3])],
+			dtype = np.float32
+		)])
 
 		collected_cards: np.ndarray = np.array([one_hot_encode(
 			size = 52,
