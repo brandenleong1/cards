@@ -303,7 +303,8 @@ class MultiAgentEnv:
 		self.batch_num: int =														0
 		self.save_checkpoint_frequency: int =										10
 
-		self._message_queue: list[asyncio.Queue] =									[asyncio.Queue() for _ in range(self.num_agents)]
+		self._is_processing_event: list[bool] =										[False			for _ in range(self.num_agents)]
+		self._event_queue: list[list[tuple[str, float]]] =							[list()			for _ in range(self.num_agents)] # (message, timestamp)
 
 		self.eval_game_complete_event: asyncio.Event =								asyncio.Event()
 
@@ -521,15 +522,23 @@ class MultiAgentEnv:
 			eval_task = asyncio.create_task(launch_eval())
 			await asyncio.gather(*tasks, eval_task)
 
+	async def unlock_processing_event(self, ws_idx: int) -> None:
+		if len(self._event_queue[ws_idx]):
+			message, timestep = self._event_queue[ws_idx].pop(0)
+
+			asyncio.create_task(self._handle_message(ws_idx, message))
+
+		else:
+			self._is_processing_event[ws_idx] = False
+
 	async def _listen(self, ws_idx: int) -> None:
 		ws = self.ws_list[ws_idx]
-		task = asyncio.create_task(self._process_messages(ws_idx))
-
-		try:
-			async for message in ws:
-				await self._message_queue[ws_idx].put(message)
-		finally:
-			task.cancel()
+		async for message in ws:
+			if self._is_processing_event[ws_idx]:
+				self._event_queue[ws_idx].append((message, time.time()))
+				continue
+			else:
+				await self._handle_message(ws_idx, message)
 
 	async def _process_messages(self, ws_idx: int) -> None:
 		while True:
@@ -539,6 +548,8 @@ class MultiAgentEnv:
 	async def _handle_message(self, ws_idx: int, message: str) -> None:
 		global console_listeners
 		ws = self.ws_list[ws_idx]
+
+		self._is_processing_event[ws_idx] = True
 
 		msg = json.loads(message, object_hook = json_parser)
 		# print(ws_idx, msg)
@@ -624,6 +635,8 @@ class MultiAgentEnv:
 								'timestamp': int(time.time() * 1000)
 							}))
 
+						await self.unlock_processing_event(ws_idx)
+
 						while not all(hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected for i in range(self.num_agents)):
 							await asyncio.sleep(self.action_delay)
 
@@ -708,6 +721,7 @@ class MultiAgentEnv:
 								'timestamp': int(time.time() * 1000)
 							}))
 
+							await self.unlock_processing_event(ws_idx)
 							return
 
 			elif self.mode == MultiAgentEnv.ModelModes.infer:
@@ -724,6 +738,7 @@ class MultiAgentEnv:
 								'timestamp': int(time.time() * 1000)
 							}))
 
+							await self.unlock_processing_event(ws_idx)
 							return
 
 					await asyncio.sleep(2)
@@ -736,6 +751,7 @@ class MultiAgentEnv:
 			if self.mode == MultiAgentEnv.ModelModes.train:
 				# No Longer Collecting Data
 				if not self.is_rollout:
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				updateEnvironmentSettings(msg)
@@ -753,11 +769,12 @@ class MultiAgentEnv:
 
 				# Nothing Happened -> Return
 				if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				# Reward Calculation
 				if prev_state is not None and len(self._episode_rewards[ws_idx]) > 0:
-					reward = MultiAgentEnv.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
+					reward = self.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
 
 					self._episode_rewards[ws_idx][-1] += reward
 
@@ -820,6 +837,7 @@ class MultiAgentEnv:
 							'timestamp': int(time.time() * 1000),
 							'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
 						}))
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				console_listeners.broadcast_message(json.dumps({
@@ -875,10 +893,12 @@ class MultiAgentEnv:
 								'timestamp': int(time.time() * 1000),
 								'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
 							}))
+							await self.unlock_processing_event(ws_idx)
 							return
 
 						# Skip Action if Waiting for ACK
 						if self.is_waiting_for_ack(ws_idx, current_frame):
+							await self.unlock_processing_event(ws_idx)
 							return
 
 						# Batch Full
@@ -898,12 +918,14 @@ class MultiAgentEnv:
 							self._rollout_progressbar.close()
 							asyncio.create_task(self.train_post_rollout())
 
+							await self.unlock_processing_event(ws_idx)
 							return
 
 						with torch.no_grad():
 							actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
 
 							if actor_module_type == '':
+								await self.unlock_processing_event(ws_idx)
 								return
 
 							actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type, self._opponent_actors[ws_idx])
@@ -934,6 +956,7 @@ class MultiAgentEnv:
 
 				# Spectator or Not In Game
 				if ws.username not in GAME_SETTINGS['turn_order']:
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
@@ -948,6 +971,7 @@ class MultiAgentEnv:
 
 				# Nothing Happened -> Return
 				if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				# Game Ended
@@ -956,6 +980,7 @@ class MultiAgentEnv:
 
 				if done:
 					self.reset_game_state(ws_idx)
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				# Needs to Act -> Make Action
@@ -963,11 +988,13 @@ class MultiAgentEnv:
 
 					# Skip Action if Waiting for ACK
 					if self.is_waiting_for_ack(ws_idx, current_frame):
+						await self.unlock_processing_event(ws_idx)
 						return
 
 					actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
 
 					if actor_module_type == '':
+						await self.unlock_processing_event(ws_idx)
 						return
 
 					actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type)
@@ -975,11 +1002,13 @@ class MultiAgentEnv:
 
 			elif self.mode == MultiAgentEnv.ModelModes.eval:
 				if self.eval_game_complete_event.is_set():
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				updateEnvironmentSettings(msg)
 
 				if ws.username not in GAME_SETTINGS['turn_order']:
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
@@ -994,6 +1023,7 @@ class MultiAgentEnv:
 
 				# Nothing Happened -> Return
 				if json.dumps(prev_observation, sort_keys=True, separators=(',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys=True, separators=(',', ':')):
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				# Round Completion + Reset
@@ -1015,6 +1045,7 @@ class MultiAgentEnv:
 							self.eval_last_frame = self._latest_observation[ws_idx]['currentFrame']
 							self.eval_game_complete_event.set()
 
+					await self.unlock_processing_event(ws_idx)
 					return
 
 				self.is_evaluating = True
@@ -1024,12 +1055,14 @@ class MultiAgentEnv:
 
 					# Skip Action if Waiting for ACK
 					if self.is_waiting_for_ack(ws_idx, current_frame):
+						await self.unlock_processing_event(ws_idx)
 						return
 
 					with torch.no_grad():
 						actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
 
 						if actor_module_type == '':
+							await self.unlock_processing_event(ws_idx)
 							return
 
 						actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type, actor = self.eval_actors[ws_idx])
@@ -1095,6 +1128,8 @@ class MultiAgentEnv:
 					'status': 1
 				}
 			}))
+
+		await self.unlock_processing_event(ws_idx)
 
 	def update_latest_from_gui_observation(self, observation: dict, ws_idx: int, turn_idx: int) -> None:
 		trick: int = round(len(observation['stacks'][0]) / len(observation['turnOrder']))
@@ -1263,8 +1298,7 @@ class MultiAgentEnv:
 	def get_value_from_state(state: dict[str, np.ndarray], turn_idx: int) -> int:
 		return state['scores'][turn_idx] - np.mean(state['scores'])
 
-	@staticmethod
-	def get_reward_from_state_transition(old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
+	def get_reward_from_state_transition(self, old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> int:
 		raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
 		return raw_reward * self.reward_scale
 
