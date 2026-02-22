@@ -368,15 +368,15 @@ class MultiAgentEnv:
 		self._batch_size: int =											self.timesteps_per_batch // self.num_agents
 
 		self._batch_ts: list[int] =										[-1						for _ in range(self.num_agents)]
-		self._batch_states: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(obs))
-		self._batch_actions: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(act))
-		self._batch_action_masks: list[torch.Tensor] =					[torch.empty(0)			for _ in range(self.num_agents)]	# (B, dim(act))
-		self._batch_log_probs: list[torch.Tensor] =						[torch.empty(0)			for _ in range(self.num_agents)]	# (B,)
+		self._batch_states: list[list[torch.Tensor]] =					[list()					for _ in range(self.num_agents)]	# (B, dim(obs))
+		self._batch_actions: list[list[torch.Tensor]] =					[list()					for _ in range(self.num_agents)]	# (B, dim(act))
+		self._batch_action_masks: list[list[torch.Tensor]] =			[list()					for _ in range(self.num_agents)]	# (B, dim(act))
+		self._batch_log_probs: list[list[torch.Tensor]] =				[list()					for _ in range(self.num_agents)]	# (B,)
 		self._batch_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_agents)]	# (E, t_per_E)
-		self._batch_lens: list[np.ndarray | None] =						[np.empty(0)			for _ in range(self.num_agents)]	# (E,)
+		self._batch_lens: list[list[np.ndarray]] =						[list()					for _ in range(self.num_agents)]	# (E,)
 
 		self._episode_ts: list[int] =									[-1						for _ in range(self.num_agents)]
-		self._episode_rewards: list[np.ndarray] =						[np.empty(0)			for _ in range(self.num_agents)]	# (t_per_E,)
+		self._episode_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_agents)]	# (t_per_E,)
 
 		self.eval_actors: list[torch.nn.ModuleDict | None] =			[None					for _ in range(self.num_agents)]
 		self.eval_model_paths: list[str | None] =						[None					for _ in range(self.num_agents)]
@@ -894,11 +894,11 @@ class MultiAgentEnv:
 					if self._batch_ts[ws_idx] >= 0 and (self._opponent_actors[ws_idx] is not None or self._batch_ts[ws_idx] < self._batch_size):
 
 						if self._episode_ts[ws_idx] < 0:
-							self._episode_rewards[ws_idx] = np.empty(0)
+							self._episode_rewards[ws_idx].clear()
 							self._episode_ts[ws_idx] = 0
 
 						elif self._episode_ts[ws_idx] >= self.max_timesteps_per_episode:
-							self._episode_rewards[ws_idx] = np.empty(0)
+							self._episode_rewards[ws_idx].clear()
 							self._episode_ts[ws_idx] = 0
 
 							# Episode Complete
@@ -954,11 +954,11 @@ class MultiAgentEnv:
 								}
 							}))
 
-							self._batch_states[ws_idx] = torch.concatenate((self._batch_states[ws_idx], inputs), dim = 0)
-							self._batch_actions[ws_idx] = torch.concatenate((self._batch_actions[ws_idx], actions), dim = 0)
-							self._batch_action_masks[ws_idx] = torch.concatenate((self._batch_action_masks[ws_idx], mask), dim = 0)
-							self._batch_log_probs[ws_idx] = torch.concatenate((self._batch_log_probs[ws_idx], log_probs), dim = 0)
-							self._episode_rewards[ws_idx] = np.concatenate((self._episode_rewards[ws_idx], np.array([0.0])), axis = 0)
+							self._batch_states[ws_idx].append(inputs.squeeze(0))
+							self._batch_actions[ws_idx].append(actions.squeeze(0))
+							self._batch_action_masks[ws_idx].append(mask.squeeze(0))
+							self._batch_log_probs[ws_idx].append(log_probs.squeeze(0))
+							self._episode_rewards[ws_idx].append(np.array([0.0]))
 
 						self._batch_ts[ws_idx] += 1
 						self._episode_ts[ws_idx] += 1
@@ -1111,13 +1111,13 @@ class MultiAgentEnv:
 
 				if self.mode == MultiAgentEnv.ModelModes.train:
 					# Rollback rejected command
-					if self._batch_states[ws_idx].shape[0] > 0:
+					if len(self._batch_states[ws_idx]) > 0:
 						self._batch_states[ws_idx] = self._batch_states[ws_idx][:-1]
 						self._batch_actions[ws_idx] = self._batch_actions[ws_idx][:-1]
 						self._batch_action_masks[ws_idx] = self._batch_action_masks[ws_idx][:-1]
 						self._batch_log_probs[ws_idx] = self._batch_log_probs[ws_idx][:-1]
 
-						if self._episode_rewards[ws_idx].shape[0] > 0:
+						if len(self._episode_rewards[ws_idx]) > 0:
 							self._episode_rewards[ws_idx] = self._episode_rewards[ws_idx][:-1]
 
 						self._batch_ts[ws_idx] -= 1
@@ -1346,10 +1346,10 @@ class MultiAgentEnv:
 		return False
 
 	def end_episode(self, ws_idx: int) -> None:
-		self._batch_lens[ws_idx] = np.concatenate((self._batch_lens[ws_idx], np.array([self._episode_ts[ws_idx]])), axis = 0)
-		self._batch_rewards[ws_idx].append(np.copy(self._episode_rewards[ws_idx]))
+		self._batch_lens[ws_idx].append(np.array([self._episode_ts[ws_idx]]))
+		self._batch_rewards[ws_idx].append(np.concatenate(self._episode_rewards[ws_idx], axis = 0))
 		self._episode_ts[ws_idx] = -1
-		self._episode_rewards[ws_idx] = np.empty(0)
+		self._episode_rewards[ws_idx].clear()
 
 	async def train(self) -> None:
 		is_in_game = False
@@ -1382,10 +1382,22 @@ class MultiAgentEnv:
 
 		batch_advantages, batch_returns =	self.compute_gaes()																		# (B,), (B,)
 
-		batch_states =			torch.concatenate([self._batch_states[ws_idx] for ws_idx in training_agents_idxs], dim = 0)			# (B, dim(obs))
-		batch_actions =			torch.concatenate([self._batch_actions[ws_idx] for ws_idx in training_agents_idxs], dim = 0)		# (B, dim(act))
-		batch_action_masks =	torch.concatenate([self._batch_action_masks[ws_idx] for ws_idx in training_agents_idxs], dim = 0)	# (B, dim(act))
-		batch_log_probs =		torch.concatenate([self._batch_log_probs[ws_idx] for ws_idx in training_agents_idxs], dim = 0)		# (B,)
+		batch_states =			torch.stack([
+									state for ws_idx in training_agents_idxs
+									for state in self._batch_states[ws_idx]
+								], dim = 0)		# (B, dim(obs))
+		batch_actions =			torch.stack([
+									action for ws_idx in training_agents_idxs
+									for action in self._batch_actions[ws_idx]
+								], dim = 0)		# (B, dim(act))
+		batch_action_masks =	torch.stack([
+									action_mask for ws_idx in training_agents_idxs
+									for action_mask in self._batch_action_masks[ws_idx]
+								], dim = 0)		# (B, dim(act))
+		batch_log_probs =		torch.stack([
+									log_prob for ws_idx in training_agents_idxs
+									for log_prob in self._batch_log_probs[ws_idx]
+								], dim = 0)		# (B)
 
 		game_states = batch_states[:, :len(GameStates)]
 		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
@@ -1518,7 +1530,7 @@ class MultiAgentEnv:
 			batch_returns = []
 
 			with torch.no_grad():
-				batch_values = self.critic(self._batch_states[ws_idx]).numpy()
+				batch_values = self.critic(torch.stack(self._batch_states[ws_idx], dim = 0)).numpy()
 
 			value_idx = 0
 			for episode_idx, episode_rewards in enumerate(self._batch_rewards[ws_idx]):
