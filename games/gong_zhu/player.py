@@ -268,7 +268,7 @@ class CriticNN(torch.nn.Module):
 		super().__init__()
 
 		self.network = torch.nn.Sequential(
-			*[e for dim in dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())],
+			*[e for dim in dims for e in (torch.nn.LazyLinear(dim), torch.nn.LayerNorm(dim), torch.nn.ReLU())],
 			torch.nn.LazyLinear(1)
 		)
 
@@ -310,16 +310,7 @@ class MultiAgentEnv:
 
 		self.eval_game_complete_event: asyncio.Event =								asyncio.Event()
 
-		self.training_history: dict[str, list[int | float]] = {
-			'batch': [],
-			'actor_loss': [],
-			'critic_loss': [],
-			'mean_kl_divergence': [],
-			'mean_return': [],
-			'max_episode_reward': [],
-			'min_episode_reward': [],
-			'mean_episode_reward': []
-		}
+		self.training_history: dict[str, list[int | float]] = {}
 
 		self.reset()
 
@@ -343,10 +334,10 @@ class MultiAgentEnv:
 		self.gamma: float =							0.95
 		self.gae_lambda: float =					0.95
 		self.clip_epsilon: float =					0.2
-		self.n_updates_per_batch: int =				10
+		self.n_updates_per_batch: int =				8
 		self.mini_batch_size: int =					512
-		self.actor_lr: float =						1e-4
-		self.critic_lr: float =						3e-4
+		self.actor_lr: float =						5e-5
+		self.critic_lr: float =						1e-4
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
 
@@ -408,12 +399,12 @@ class MultiAgentEnv:
 
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (256, 256, 128, 13)),
-			'PLAY': ActorNN('PLAY', (256, 256, 128, 13))
+			'SHOW': ActorNN('SHOW', (512, 256, 128, 13)),
+			'PLAY': ActorNN('PLAY', (512, 256, 128, 13))
 		})
 
 	def create_critic(self) -> torch.nn.Module:
-		return CriticNN((256, 256, 128))
+		return CriticNN((1024, 512, 256, 128))
 
 	def save_checkpoint(self) -> None:
 		checkpoint = {
@@ -467,12 +458,20 @@ class MultiAgentEnv:
 
 	def load_opponent_models(self) -> None:
 		model_paths = self.get_models_in_directory(self.args.save_dir)
-		for ws_idx in range(1, self.num_agents):
-			if len(model_paths) != 0:
-				path = random.choice(model_paths)
-				self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
-			else:
+
+		if len(model_paths) == 0:
+			for ws_idx in range(1, self.num_agents):
 				self._opponent_actors[ws_idx] = None
+			return
+
+		else:
+			weights = np.array([i + 1 for i in range(len(model_paths))], dtype = np.float64)
+			weights /= weights.sum()
+
+			for ws_idx in range(1, self.num_agents):
+				path = np.random.choice(model_paths, p = weights)
+				print(f'Selected model [{path}] as opponent')
+				self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
 
 	async def connect(self, url: str) -> None:
 		global console_listeners
@@ -1407,6 +1406,7 @@ class MultiAgentEnv:
 		actor_losses = []
 		critic_losses = []
 		kl_divergences = []
+		entropy_values = []
 
 		for epoch in tqdm(range(self.n_updates_per_batch), desc = 'Training: ', dynamic_ncols = True):
 			indices = torch.randperm(batch_len)
@@ -1472,6 +1472,7 @@ class MultiAgentEnv:
 
 				actor_losses.append(actor_loss.item())
 				critic_losses.append(critic_loss.item())
+				entropy_values.append(mini_batch_entropy.item())
 
 				with torch.no_grad():
 					kl = (mini_batch_log_probs - mini_batch_log_probs_new).mean()
@@ -1479,20 +1480,22 @@ class MultiAgentEnv:
 
 		all_episode_rewards = [rewards.sum() for ws_idx in training_agents_idxs for rewards in self._batch_rewards[ws_idx]]
 
-		self.training_history['batch'].append(self.batch_num)
-		self.training_history['actor_loss'].append(actor_losses[-1])
-		self.training_history['critic_loss'].append(critic_losses[-1])
-		self.training_history['mean_kl_divergence'].append(np.mean(kl_divergences))
-		self.training_history['mean_return'].append(batch_returns.mean().item())
-		self.training_history['max_episode_reward'].append(max(all_episode_rewards) if all_episode_rewards else 0)
-		self.training_history['min_episode_reward'].append(min(all_episode_rewards) if all_episode_rewards else 0)
-		self.training_history['mean_episode_reward'].append(np.mean(all_episode_rewards) if all_episode_rewards else 0)
+		self.training_history.setdefault('batch', []).append(self.batch_num)
+		self.training_history.setdefault('actor_loss', []).append(actor_losses[-1])
+		self.training_history.setdefault('critic_loss', []).append(critic_losses[-1])
+		self.training_history.setdefault('mean_kl_divergence', []).append(np.mean(kl_divergences))
+		self.training_history.setdefault('mean_entropy', []).append(np.mean(entropy_values))
+		self.training_history.setdefault('mean_return', []).append(batch_returns.mean().item())
+		self.training_history.setdefault('max_episode_reward', []).append(max(all_episode_rewards) if all_episode_rewards else 0)
+		self.training_history.setdefault('min_episode_reward', []).append(min(all_episode_rewards) if all_episode_rewards else 0)
+		self.training_history.setdefault('mean_episode_reward', []).append(np.mean(all_episode_rewards) if all_episode_rewards else 0)
 
 		print(f'-- Training Complete (Batch {self.batch_num}) --')
 		print(f'  Total Samples: {batch_len}')
 		print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}')
 		print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}')
 		print(f'  Mean KL Divergence: {np.mean(kl_divergences):.4f}')
+		print(f'  Mean Entropy: {np.mean(entropy_values):.4f}')
 		print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]')
 		print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}')
 
@@ -1599,7 +1602,7 @@ class MultiAgentEnv:
 		# Eval Loop
 		while True:
 			# Load Matchup
-			batch_models = [random.choice(model_paths) for _ in range(self.num_agents)]
+			batch_models = [np.random.choice(model_paths) for _ in range(self.num_agents)]
 			self.load_models(batch_models)
 
 			batch_model_names = [os.path.basename(p) for p in batch_models]
