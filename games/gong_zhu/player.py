@@ -329,16 +329,17 @@ class MultiAgentEnv:
 		self.max_timesteps_per_episode: int =		200
 
 		self.reward_scale: float =					1.0 / 10
+		self.opponent_temperature: float =			0.3
 
 		# PPO Parameters
-		self.gamma: float =							0.95
+		self.gamma: float =							0.9
 		self.gae_lambda: float =					0.95
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				8
-		self.mini_batch_size: int =					512
-		self.actor_lr: float =						5e-5
-		self.critic_lr: float =						1e-4
-		self.entropy_coef: float =					0.01
+		self.mini_batch_size: int =					256
+		self.actor_lr: float =						3e-5
+		self.critic_lr: float =						3e-4
+		self.entropy_coef: float =					0.005
 		self.max_grad_norm: float =					0.5
 
 	def reset(self) -> None:
@@ -403,8 +404,11 @@ class MultiAgentEnv:
 			'PLAY': ActorNN('PLAY', (512, 256, 128, 13))
 		})
 
-	def create_critic(self) -> torch.nn.Module:
-		return CriticNN((1024, 512, 256, 128))
+	def create_critic(self) -> torch.nn.ModuleDict:
+		return torch.nn.ModuleDict({
+			'SHOW': CriticNN((512, 256, 128)),
+			'PLAY': CriticNN((1024, 512, 256, 128))
+		})
 
 	def save_checkpoint(self) -> None:
 		checkpoint = {
@@ -456,6 +460,14 @@ class MultiAgentEnv:
 
 		return actor
 
+	def get_opponent_sampling_weights(self, model_paths: list[str]) -> np.ndarray:
+		n = len(model_paths)
+
+		weights = np.exp(np.linspace(-n * self.opponent_temperature, 0, n))
+		weights /= weights.sum()
+
+		return weights
+
 	def load_opponent_models(self) -> None:
 		model_paths = self.get_models_in_directory(self.args.save_dir)
 
@@ -465,8 +477,7 @@ class MultiAgentEnv:
 			return
 
 		else:
-			weights = np.array([i + 1 for i in range(len(model_paths))], dtype = np.float64)
-			weights /= weights.sum()
+			weights = self.get_opponent_sampling_weights(model_paths)
 
 			for ws_idx in range(1, self.num_agents):
 				path = np.random.choice(model_paths, p = weights)
@@ -1404,10 +1415,18 @@ class MultiAgentEnv:
 		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
 
 		eps = 1e-9
-		batch_advantages =	(batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + eps)
+
+		for mask in (show_mask, play_mask):
+			if mask.sum() > 1:
+				phase_advantages = batch_advantages[mask]
+				batch_advantages[mask] = (phase_advantages - phase_advantages.mean()) / (phase_advantages.std() + eps)
 
 		with torch.no_grad():
-			batch_values_old = self.critic(batch_states)
+			batch_values_old = torch.zeros(batch_states.shape[0])
+			if show_mask.any():
+				batch_values_old[show_mask] = self.critic['SHOW'](batch_states[show_mask])
+			if play_mask.any():
+				batch_values_old[play_mask] = self.critic['PLAY'](batch_states[play_mask])
 
 		actor_optimizer =	torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr)
 		critic_optimizer =	torch.optim.Adam(self.critic.parameters(),	lr = self.critic_lr)
@@ -1419,6 +1438,7 @@ class MultiAgentEnv:
 		critic_losses = []
 		kl_divergences = []
 		entropy_values = []
+		clip_fractions = []
 
 		for epoch in tqdm(range(self.n_updates_per_batch), desc = 'Training: ', dynamic_ncols = True):
 			indices = torch.randperm(batch_len)
@@ -1438,6 +1458,7 @@ class MultiAgentEnv:
 				mini_batch_play_mask =		play_mask[mini_batch_indices]
 
 				mini_batch_log_probs_new =	torch.zeros(mini_batch_indices.shape[0])
+				mini_batch_values_new =		torch.zeros(mini_batch_indices.shape[0])
 				mini_batch_entropy =		torch.tensor(0.0)
 
 				if mini_batch_show_mask.any():
@@ -1449,6 +1470,8 @@ class MultiAgentEnv:
 					mini_batch_log_probs_new[mini_batch_show_mask] = show_log_probs
 					mini_batch_entropy += show_entropy
 
+					mini_batch_values_new[mini_batch_show_mask] = self.critic['SHOW'](mini_batch_states[mini_batch_show_mask])
+
 				if mini_batch_play_mask.any():
 					play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
 						mini_batch_states[mini_batch_play_mask],
@@ -1458,6 +1481,8 @@ class MultiAgentEnv:
 					mini_batch_log_probs_new[mini_batch_play_mask] = play_log_probs
 					mini_batch_entropy += play_entropy
 
+					mini_batch_values_new[mini_batch_play_mask] = self.critic['PLAY'](mini_batch_states[mini_batch_play_mask])
+
 				ratios = torch.exp(mini_batch_log_probs_new - mini_batch_log_probs.detach())
 				ratios = torch.clamp(ratios, eps, 100.0)
 
@@ -1466,7 +1491,6 @@ class MultiAgentEnv:
 
 				actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * mini_batch_entropy
 
-				mini_batch_values_new = self.critic(mini_batch_states)
 				values_clipped = mini_batch_values_old + torch.clamp(mini_batch_values_new - mini_batch_values_old, -self.clip_epsilon, self.clip_epsilon)
 				critic_loss_unclipped = (mini_batch_values_new - mini_batch_returns) ** 2
 				critic_loss_clipped = (values_clipped - mini_batch_returns) ** 2
@@ -1490,13 +1514,25 @@ class MultiAgentEnv:
 					kl = (mini_batch_log_probs - mini_batch_log_probs_new).mean()
 					kl_divergences.append(kl.item())
 
+					clip_fraction = ((ratios - 1.0).abs() > self.clip_epsilon).float().mean().item()
+					clip_fractions.append(clip_fraction)
+
 		all_episode_rewards = [rewards.sum() for ws_idx in training_agents_idxs for rewards in self._batch_rewards[ws_idx]]
+
+		with torch.no_grad():
+			predicted_values = torch.zeros(batch_states.shape[0])
+			if show_mask.any():
+				predicted_values[show_mask] = self.critic['SHOW'](batch_states[show_mask])
+			if play_mask.any():
+				predicted_values[play_mask] = self.critic['PLAY'](batch_states[play_mask])
+			explained_variance = 1 - ((batch_returns - predicted_values).var() / (batch_returns.var() + eps))
 
 		self.training_history.setdefault('batch', []).append(self.batch_num)
 		self.training_history.setdefault('actor_loss', []).append(actor_losses[-1])
 		self.training_history.setdefault('critic_loss', []).append(critic_losses[-1])
 		self.training_history.setdefault('mean_kl_divergence', []).append(np.mean(kl_divergences))
 		self.training_history.setdefault('mean_entropy', []).append(np.mean(entropy_values))
+		self.training_history.setdefault('mean_clip_fraction', []).append(np.mean(clip_fractions))
 		self.training_history.setdefault('mean_return', []).append(batch_returns.mean().item())
 		self.training_history.setdefault('max_episode_reward', []).append(max(all_episode_rewards) if all_episode_rewards else 0)
 		self.training_history.setdefault('min_episode_reward', []).append(min(all_episode_rewards) if all_episode_rewards else 0)
@@ -1508,6 +1544,8 @@ class MultiAgentEnv:
 		print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}')
 		print(f'  Mean KL Divergence: {np.mean(kl_divergences):.4f}')
 		print(f'  Mean Entropy: {np.mean(entropy_values):.4f}')
+		print(f'  Mean Clip Fraction: {np.mean(clip_fractions):.4f}')
+		print(f'  Explained Variance: {explained_variance:.4f}')
 		print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]')
 		print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}')
 
@@ -1529,8 +1567,20 @@ class MultiAgentEnv:
 			batch_advantages = []
 			batch_returns = []
 
+			stacked_states = torch.stack(self._batch_states[ws_idx], dim = 0)
+
+			game_states = stacked_states[:, :len(GameStates)]
+			show_mask = game_states[:, 0:2].sum(dim = 1) > 0
+			play_mask = game_states[:, 2:6].sum(dim = 1) > 0
+
 			with torch.no_grad():
-				batch_values = self.critic(torch.stack(self._batch_states[ws_idx], dim = 0)).numpy()
+				batch_values = torch.zeros(stacked_states.shape[0])
+				if show_mask.any():
+					batch_values[show_mask] = self.critic['SHOW'](stacked_states[show_mask])
+				if play_mask.any():
+					batch_values[play_mask] = self.critic['PLAY'](stacked_states[play_mask])
+
+				batch_values = batch_values.numpy()
 
 			value_idx = 0
 			for episode_idx, episode_rewards in enumerate(self._batch_rewards[ws_idx]):
