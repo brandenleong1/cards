@@ -104,21 +104,43 @@ class ConsoleListeners:
 		}))
 
 class ActorNN(torch.nn.Module):
-	def __init__(self, module_type: str, dims: tuple[int, ...]) -> None:
-		super().__init__()
+	def __init__(
+		self,
+		module_type: str,
+		network_dims: tuple[int, ...],
+		state_encoder_dims: tuple[int, ...],
+		history_encoder_dims: tuple[int, ...]
+	) -> None:
 
-		self.network = torch.nn.Sequential(
-			*[e for dim in dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())][:-1]
-		)
+		super().__init__()
 
 		if module_type not in {'SHOW', 'PLAY'}:
 			raise ValueError(f'Type [{module_type}] undefined')
 
 		self.module_type = module_type
 
-	def forward(self, inputs: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+		self.state_encoder = torch.nn.Sequential(
+			*[e for dim in state_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
+		)
+
+		self.history_encoder = torch.nn.Sequential(
+			*[e for dim in history_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
+		)
+
+		self.network = torch.nn.Sequential(
+			*[e for dim in network_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())][:-1]
+		)
+
+	def forward(self, states: dict[str, torch.Tensor], mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 		# inputs.shape:	(B, dim(obs))
 		# mask.shape:	(B, dim(act))
+
+		state, history = MultiAgentEnv.serialize_state(states)
+
+		state = self.state_encoder(state)
+		history = self.history_encoder(history)
+
+		inputs = torch.concatenate([state, history], dim = -1)
 
 		logits = self.network(inputs)
 
@@ -204,12 +226,19 @@ class ActorNN(torch.nn.Module):
 
 		return padded_hand
 
-	def evaluate_actions(self, states: torch.Tensor, actions: torch.Tensor, masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+	def evaluate_actions(self, states: dict[str, torch.Tensor], actions: torch.Tensor, masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 		# states.shape:		(B, dim(obs))
 		# actions.shape:	(B, dim(act))
 		# masks.shape:		(B, dim(act))
 
-		logits = self.network(states)
+		state, history = MultiAgentEnv.serialize_state(states)
+
+		state = self.state_encoder(state)
+		history = self.history_encoder(history)
+
+		inputs = torch.concatenate([state, history], dim = -1)
+
+		logits = self.network(inputs)
 
 		eps = 1e-9
 
@@ -249,12 +278,6 @@ class ActorNN(torch.nn.Module):
 		return log_probs, entropy
 
 	@staticmethod
-	def serialize_state(state: dict[str, np.ndarray]) -> np.ndarray:
-		order = ['game_state', 'hand', 'scores', 'current_trick', 'collected_cards', 'exposed', 'play_history', 'leader_history']
-
-		return np.concatenate([state[k].flatten() for k in order], axis = 0)
-
-	@staticmethod
 	def get_module_type_from_game_state(game_state: str) -> str:
 		if game_state.startswith('SHOW'):
 			return 'SHOW'
@@ -264,21 +287,47 @@ class ActorNN(torch.nn.Module):
 			raise ValueError(f'Unknown game_state [{game_state}]')
 
 class CriticNN(torch.nn.Module):
-	def __init__(self, dims: tuple[int, ...]) -> None:
+	def __init__(
+		self,
+		network_dims: tuple[int, ...],
+		state_encoder_dims: tuple[int, ...],
+		history_encoder_dims: tuple[int, ...]
+	) -> None:
+
 		super().__init__()
 
+		self.state_encoder = torch.nn.Sequential(
+			*[e for dim in state_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
+		)
+
+		self.history_encoder = torch.nn.Sequential(
+			*[e for dim in history_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
+		)
+
 		self.network = torch.nn.Sequential(
-			*[e for dim in dims for e in (torch.nn.LazyLinear(dim), torch.nn.LayerNorm(dim), torch.nn.ReLU())],
+			*[e for dim in network_dims for e in (torch.nn.LazyLinear(dim), torch.nn.LayerNorm(dim), torch.nn.ReLU())],
 			torch.nn.LazyLinear(1)
 		)
 
-	def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+	def forward(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
 		# inputs.shape: (B, dim(obs))
 		# return.shape: (B,)
+
+		state, history = MultiAgentEnv.serialize_state(states)
+
+		state = self.state_encoder(state)
+		history = self.history_encoder(history)
+
+		inputs = torch.concatenate([state, history], dim = -1)
+
 		return self.network(inputs).squeeze(-1)
 
 
 class MultiAgentEnv:
+	serialize_state_order = {
+		'state': ('game_state', 'hand', 'scores', 'current_trick', 'collected_cards', 'exposed'),
+		'history': ('play_history', 'leader_history')
+	}
 
 	class ModelModes(enum.Enum):
 		train =			0
@@ -341,6 +390,7 @@ class MultiAgentEnv:
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.005
 		self.max_grad_norm: float =					0.5
+		self.huber_loss_delta: float =				100.0
 
 	def reset(self) -> None:
 		num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
@@ -369,7 +419,7 @@ class MultiAgentEnv:
 		self._batch_size: int =											self.timesteps_per_batch // self.num_agents
 
 		self._batch_ts: list[int] =										[-1						for _ in range(self.num_agents)]
-		self._batch_states: list[list[torch.Tensor]] =					[list()					for _ in range(self.num_agents)]	# (B, dim(obs))
+		self._batch_states: list[list[dict[str, torch.Tensor]]] =		[list()					for _ in range(self.num_agents)]	# (B, dim(obs))
 		self._batch_actions: list[list[torch.Tensor]] =					[list()					for _ in range(self.num_agents)]	# (B, dim(act))
 		self._batch_action_masks: list[list[torch.Tensor]] =			[list()					for _ in range(self.num_agents)]	# (B, dim(act))
 		self._batch_log_probs: list[list[torch.Tensor]] =				[list()					for _ in range(self.num_agents)]	# (B,)
@@ -400,14 +450,14 @@ class MultiAgentEnv:
 
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (512, 256, 128, 13)),
-			'PLAY': ActorNN('PLAY', (512, 256, 128, 13))
+			'SHOW': ActorNN('SHOW', (512, 256, 128, 13), (256, 128), (128, 64)),
+			'PLAY': ActorNN('PLAY', (512, 256, 128, 13), (256, 128), (128, 64))
 		})
 
 	def create_critic(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': CriticNN((512, 256, 128)),
-			'PLAY': CriticNN((1024, 512, 256, 128))
+			'SHOW': CriticNN((512, 256, 128), (256, 128), (128, 64)),
+			'PLAY': CriticNN((1024, 512, 256, 128), (256, 128), (128, 64))
 		})
 
 	def save_checkpoint(self) -> None:
@@ -440,15 +490,18 @@ class MultiAgentEnv:
 		self.critic.load_state_dict(checkpoint['critic_state_dict'])
 		self.training_history = checkpoint['training_history']
 		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
+		# for name, param in self.actor.named_parameters():
+		# 	print(f"* self.actor - {name}: {param.shape}")
+		# for name, param in self.critic.named_parameters():
+		# 	print(f"* self.critic - {name}: {param.shape}")
 
 	def load_actor_from_checkpoint(self, model_path: str) -> torch.nn.ModuleDict:
 		actor = self.create_actor()
 
 		checkpoint = torch.load(model_path, weights_only = False)
-		input_dim = checkpoint['actor_state_dict']['SHOW.network.0.weight'].shape[1]
 
 		# Init Lazy Modules
-		dummy_input = torch.zeros(1, input_dim)
+		dummy_input = MultiAgentEnv.get_dummy_state()
 		dummy_mask = torch.ones(1, 13)
 
 		with torch.no_grad():
@@ -965,7 +1018,7 @@ class MultiAgentEnv:
 								}
 							}))
 
-							self._batch_states[ws_idx].append(inputs.squeeze(0))
+							self._batch_states[ws_idx].append({k: v.squeeze(0) for k, v in inputs.items()})
 							self._batch_actions[ws_idx].append(actions.squeeze(0))
 							self._batch_action_masks[ws_idx].append(mask.squeeze(0))
 							self._batch_log_probs[ws_idx].append(log_probs.squeeze(0))
@@ -1229,12 +1282,12 @@ class MultiAgentEnv:
 		ws_idx: int,
 		actor_module_type: str,
 		actor: torch.nn.ModuleDict | None = None
-	) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+	) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor], torch.Tensor]:
 
 		if actor is None:
 			actor = self.actor
 
-		inputs = torch.tensor(np.array([ActorNN.serialize_state(self._latest_state[ws_idx])]))
+		inputs = {k: torch.tensor(v, dtype = torch.float32).unsqueeze(0) for k, v in self._latest_state[ws_idx].items()}
 		mask = torch.tensor(np.array([actor[actor_module_type].calculate_action_mask(self._latest_state[ws_idx])]))
 
 		actions, log_probs = actor[actor_module_type](inputs, mask)
@@ -1343,6 +1396,35 @@ class MultiAgentEnv:
 		raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
 		return raw_reward * self.reward_scale
 
+	@staticmethod
+	def get_masked_states(states: dict[str, torch.Tensor], mask: torch.Tensor) -> dict[str, torch.Tensor]:
+		return {k: v[mask] for k, v in states.items()}
+
+	@staticmethod
+	def get_dummy_state() -> dict[str, torch.Tensor]:
+		num_players = GAME_SETTINGS['NUM_PLAYERS']
+		num_cards = GAME_SETTINGS['NUM_CARDS']
+		num_tricks = math.ceil(num_cards / num_players)
+
+		return {
+			'game_state':		torch.zeros(1, len(GameStates)),
+			'hand':				torch.zeros(1, num_cards),
+			'scores':			torch.zeros(1, num_players),
+			'current_trick':	torch.zeros(1, num_cards),
+			'collected_cards':	torch.zeros(1, num_players * num_cards),
+			'exposed':			torch.zeros(1, num_players * num_cards),
+			'play_history':		torch.zeros(1, num_tricks * num_players * num_cards),
+			'leader_history':	torch.zeros(1, num_tricks * num_players)
+		}
+
+	@staticmethod
+	def serialize_state(states: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+
+		state = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['state']], dim = -1)
+		history = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['history']], dim = -1)
+
+		return state, history
+
 	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
 		start_time = time.time()
 
@@ -1393,10 +1475,13 @@ class MultiAgentEnv:
 
 		batch_advantages, batch_returns =	self.compute_gaes()																		# (B,), (B,)
 
-		batch_states =			torch.stack([
+		batch_state_dicts =		[
 									state for ws_idx in training_agents_idxs
 									for state in self._batch_states[ws_idx]
-								], dim = 0)		# (B, dim(obs))
+								]
+		batch_states =			{k: torch.stack(
+									([s[k].flatten() for s in batch_state_dicts]), dim = 0
+								) for k in batch_state_dicts[0].keys()}
 		batch_actions =			torch.stack([
 									action for ws_idx in training_agents_idxs
 									for action in self._batch_actions[ws_idx]
@@ -1410,7 +1495,7 @@ class MultiAgentEnv:
 									for log_prob in self._batch_log_probs[ws_idx]
 								], dim = 0)		# (B)
 
-		game_states = batch_states[:, :len(GameStates)]
+		game_states = batch_states['game_state']
 		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
 		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
 
@@ -1422,20 +1507,24 @@ class MultiAgentEnv:
 				batch_advantages[mask] = (phase_advantages - phase_advantages.mean()) / (phase_advantages.std() + eps)
 
 		with torch.no_grad():
-			batch_values_old = torch.zeros(batch_states.shape[0])
+			batch_values_old = torch.zeros(len(batch_state_dicts))
 			if show_mask.any():
-				batch_values_old[show_mask] = self.critic['SHOW'](batch_states[show_mask])
+				masked_states = MultiAgentEnv.get_masked_states(batch_states, show_mask)
+				batch_values_old[show_mask] = self.critic['SHOW'](masked_states)
 			if play_mask.any():
-				batch_values_old[play_mask] = self.critic['PLAY'](batch_states[play_mask])
+				masked_states = MultiAgentEnv.get_masked_states(batch_states, play_mask)
+				batch_values_old[play_mask] = self.critic['PLAY'](masked_states)
 
 		actor_optimizer =	torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr)
 		critic_optimizer =	torch.optim.Adam(self.critic.parameters(),	lr = self.critic_lr)
 
-		batch_len =			batch_states.shape[0]
+		batch_len =			len(batch_state_dicts)
 		mini_batch_len =	self.mini_batch_size
 
 		actor_losses = []
 		critic_losses = []
+		show_critic_losses = []
+		play_critic_losses = []
 		kl_divergences = []
 		entropy_values = []
 		clip_fractions = []
@@ -1447,7 +1536,7 @@ class MultiAgentEnv:
 				end = start + mini_batch_len
 				mini_batch_indices = indices[start:end]
 
-				mini_batch_states =			batch_states[mini_batch_indices]
+				mini_batch_states =			MultiAgentEnv.get_masked_states(batch_states, mini_batch_indices)
 				mini_batch_actions =		batch_actions[mini_batch_indices]
 				mini_batch_action_masks =	batch_action_masks[mini_batch_indices]
 				mini_batch_log_probs =		batch_log_probs[mini_batch_indices]
@@ -1463,25 +1552,25 @@ class MultiAgentEnv:
 
 				if mini_batch_show_mask.any():
 					show_log_probs, show_entropy = self.actor['SHOW'].evaluate_actions(
-						mini_batch_states[mini_batch_show_mask],
+						MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_show_mask),
 						mini_batch_actions[mini_batch_show_mask],
 						mini_batch_action_masks[mini_batch_show_mask]
 					)
 					mini_batch_log_probs_new[mini_batch_show_mask] = show_log_probs
 					mini_batch_entropy += show_entropy
 
-					mini_batch_values_new[mini_batch_show_mask] = self.critic['SHOW'](mini_batch_states[mini_batch_show_mask])
+					mini_batch_values_new[mini_batch_show_mask] = self.critic['SHOW'](MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_show_mask))
 
 				if mini_batch_play_mask.any():
 					play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
-						mini_batch_states[mini_batch_play_mask],
+						MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_play_mask),
 						mini_batch_actions[mini_batch_play_mask],
 						mini_batch_action_masks[mini_batch_play_mask]
 					)
 					mini_batch_log_probs_new[mini_batch_play_mask] = play_log_probs
 					mini_batch_entropy += play_entropy
 
-					mini_batch_values_new[mini_batch_play_mask] = self.critic['PLAY'](mini_batch_states[mini_batch_play_mask])
+					mini_batch_values_new[mini_batch_play_mask] = self.critic['PLAY'](MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_play_mask))
 
 				ratios = torch.exp(mini_batch_log_probs_new - mini_batch_log_probs.detach())
 				ratios = torch.clamp(ratios, eps, 100.0)
@@ -1492,9 +1581,15 @@ class MultiAgentEnv:
 				actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * mini_batch_entropy
 
 				values_clipped = mini_batch_values_old + torch.clamp(mini_batch_values_new - mini_batch_values_old, -self.clip_epsilon, self.clip_epsilon)
-				critic_loss_unclipped = (mini_batch_values_new - mini_batch_returns) ** 2
-				critic_loss_clipped = (values_clipped - mini_batch_returns) ** 2
-				critic_loss = 0.5 * torch.max(critic_loss_unclipped, critic_loss_clipped).mean()
+				critic_loss_unclipped = F.huber_loss(mini_batch_values_new, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
+				critic_loss_clipped = F.huber_loss(values_clipped, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
+				critic_loss_per_sample = torch.max(critic_loss_unclipped, critic_loss_clipped)
+				critic_loss = critic_loss_per_sample.mean()
+
+				if mini_batch_show_mask.any():
+					show_critic_losses.append(critic_loss_per_sample[mini_batch_show_mask].mean().item())
+				if mini_batch_play_mask.any():
+					play_critic_losses.append(critic_loss_per_sample[mini_batch_play_mask].mean().item())
 
 				actor_optimizer.zero_grad()
 				actor_loss.backward()
@@ -1520,11 +1615,15 @@ class MultiAgentEnv:
 		all_episode_rewards = [rewards.sum() for ws_idx in training_agents_idxs for rewards in self._batch_rewards[ws_idx]]
 
 		with torch.no_grad():
-			predicted_values = torch.zeros(batch_states.shape[0])
+			predicted_values = torch.zeros(len(batch_state_dicts))
 			if show_mask.any():
-				predicted_values[show_mask] = self.critic['SHOW'](batch_states[show_mask])
+				masked_states = MultiAgentEnv.get_masked_states(batch_states, show_mask)
+				predicted_values[show_mask] = self.critic['SHOW'](masked_states)
+				show_explained_variance = 1 - ((batch_returns[show_mask] - predicted_values[show_mask]).var() / (batch_returns[show_mask].var() + eps)).item()
 			if play_mask.any():
-				predicted_values[play_mask] = self.critic['PLAY'](batch_states[play_mask])
+				masked_states = MultiAgentEnv.get_masked_states(batch_states, play_mask)
+				predicted_values[play_mask] = self.critic['PLAY'](masked_states)
+				play_explained_variance = 1 - ((batch_returns[play_mask] - predicted_values[play_mask]).var() / (batch_returns[play_mask].var() + eps)).item()
 			explained_variance = 1 - ((batch_returns - predicted_values).var() / (batch_returns.var() + eps))
 
 		self.training_history.setdefault('batch', []).append(self.batch_num)
@@ -1542,6 +1641,11 @@ class MultiAgentEnv:
 		print(f'  Total Samples: {batch_len}')
 		print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}')
 		print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}')
+		print(f'  SHOW Critic Loss: {show_critic_losses[0]:.4f} -> {show_critic_losses[-1]:.4f}')
+		print(f'  PLAY Critic Loss: {play_critic_losses[0]:.4f} -> {play_critic_losses[-1]:.4f}')
+		print(f'  SHOW Explained Variance: {show_explained_variance:.4f}')
+		print(f'  PLAY Explained Variance: {play_explained_variance:.4f}')
+		print(f'  SHOW samples: {show_mask.sum().item()} | PLAY samples: {play_mask.sum().item()}')
 		print(f'  Mean KL Divergence: {np.mean(kl_divergences):.4f}')
 		print(f'  Mean Entropy: {np.mean(entropy_values):.4f}')
 		print(f'  Mean Clip Fraction: {np.mean(clip_fractions):.4f}')
@@ -1567,18 +1671,22 @@ class MultiAgentEnv:
 			batch_advantages = []
 			batch_returns = []
 
-			stacked_states = torch.stack(self._batch_states[ws_idx], dim = 0)
+			stacked_states = {
+				k: torch.stack([s[k].flatten() for s in self._batch_states[ws_idx]], dim = 0)
+				for k in self._batch_states[ws_idx][0].keys()
+			}
 
-			game_states = stacked_states[:, :len(GameStates)]
+			game_states = stacked_states['game_state']
 			show_mask = game_states[:, 0:2].sum(dim = 1) > 0
 			play_mask = game_states[:, 2:6].sum(dim = 1) > 0
 
 			with torch.no_grad():
-				batch_values = torch.zeros(stacked_states.shape[0])
+				batch_size = next(iter(stacked_states.values())).shape[0]
+				batch_values = torch.zeros(batch_size)
 				if show_mask.any():
-					batch_values[show_mask] = self.critic['SHOW'](stacked_states[show_mask])
+					batch_values[show_mask] = self.critic['SHOW'](MultiAgentEnv.get_masked_states(stacked_states, show_mask))
 				if play_mask.any():
-					batch_values[play_mask] = self.critic['PLAY'](stacked_states[play_mask])
+					batch_values[play_mask] = self.critic['PLAY'](MultiAgentEnv.get_masked_states(stacked_states, play_mask))
 
 				batch_values = batch_values.numpy()
 
