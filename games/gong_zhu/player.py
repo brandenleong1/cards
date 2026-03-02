@@ -374,21 +374,21 @@ class MultiAgentEnv:
 		self.action_delay: float =					0.001
 
 	def _init_hyperparameters(self) -> None:
-		self.timesteps_per_batch: int =				8096
+		self.timesteps_per_batch: int =				2 ** 14
 		self.max_timesteps_per_episode: int =		200
 
 		self.reward_scale: float =					1.0 / 10
 		self.opponent_temperature: float =			0.3
 
 		# PPO Parameters
-		self.gamma: float =							0.9
+		self.gamma: float =							0.95
 		self.gae_lambda: float =					0.95
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				8
 		self.mini_batch_size: int =					256
 		self.actor_lr: float =						3e-5
 		self.critic_lr: float =						3e-4
-		self.entropy_coef: float =					0.005
+		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
 		self.huber_loss_delta: float =				100.0
 
@@ -456,8 +456,8 @@ class MultiAgentEnv:
 
 	def create_critic(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': CriticNN((512, 256, 128), (256, 128), (128, 64)),
-			'PLAY': CriticNN((1024, 512, 256, 128), (256, 128), (128, 64))
+			'SHOW': CriticNN((512, 256, 128), (256, 128), (256, 128, 64)),
+			'PLAY': CriticNN((512, 256, 128), (512, 256), (1024, 512, 256))
 		})
 
 	def save_checkpoint(self) -> None:
@@ -532,10 +532,23 @@ class MultiAgentEnv:
 		else:
 			weights = self.get_opponent_sampling_weights(model_paths)
 
-			for ws_idx in range(1, self.num_agents):
-				path = np.random.choice(model_paths, p = weights)
-				print(f'Selected model [{path}] as opponent')
-				self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
+			log_path = None
+			if self.args.save_dir is not None:
+				os.makedirs(self.args.save_dir, exist_ok = True)
+				log_path = os.path.join(self.args.save_dir, 'log.txt')
+
+			if log_path is not None:
+				with open(log_path, 'a') as f:
+					for ws_idx in range(1, self.num_agents):
+						path = np.random.choice(model_paths, p = weights)
+						print(f'Selected model [{path}] as opponent', file = f)
+						self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
+
+			else:
+				for ws_idx in range(1, self.num_agents):
+					path = np.random.choice(model_paths, p = weights)
+					print(f'Selected model [{path}] as opponent')
+					self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
 
 	async def connect(self, url: str) -> None:
 		global console_listeners
@@ -1439,6 +1452,9 @@ class MultiAgentEnv:
 		return False
 
 	def end_episode(self, ws_idx: int) -> None:
+		if self._episode_ts[ws_idx] <= 0 or len(self._episode_rewards[ws_idx]) == 0:
+			return
+
 		self._batch_lens[ws_idx].append(np.array([self._episode_ts[ws_idx]]))
 		self._batch_rewards[ws_idx].append(np.concatenate(self._episode_rewards[ws_idx], axis = 0))
 		self._episode_ts[ws_idx] = -1
@@ -1637,21 +1653,25 @@ class MultiAgentEnv:
 		self.training_history.setdefault('min_episode_reward', []).append(min(all_episode_rewards) if all_episode_rewards else 0)
 		self.training_history.setdefault('mean_episode_reward', []).append(np.mean(all_episode_rewards) if all_episode_rewards else 0)
 
-		print(f'-- Training Complete (Batch {self.batch_num}) --')
-		print(f'  Total Samples: {batch_len}')
-		print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}')
-		print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}')
-		print(f'  SHOW Critic Loss: {show_critic_losses[0]:.4f} -> {show_critic_losses[-1]:.4f}')
-		print(f'  PLAY Critic Loss: {play_critic_losses[0]:.4f} -> {play_critic_losses[-1]:.4f}')
-		print(f'  SHOW Explained Variance: {show_explained_variance:.4f}')
-		print(f'  PLAY Explained Variance: {play_explained_variance:.4f}')
-		print(f'  SHOW samples: {show_mask.sum().item()} | PLAY samples: {play_mask.sum().item()}')
-		print(f'  Mean KL Divergence: {np.mean(kl_divergences):.4f}')
-		print(f'  Mean Entropy: {np.mean(entropy_values):.4f}')
-		print(f'  Mean Clip Fraction: {np.mean(clip_fractions):.4f}')
-		print(f'  Explained Variance: {explained_variance:.4f}')
-		print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]')
-		print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}')
+		log_path = os.path.join(self.args.save_dir, 'log.txt')
+		os.makedirs(self.args.save_dir, exist_ok = True)
+		with open(log_path, 'a') as f:
+			print(f'-- Training Complete (Batch {self.batch_num}) --', file = f)
+			print(f'  Total Samples: {batch_len}', file = f)
+			print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}', file = f)
+			print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}', file = f)
+			print(f'  SHOW Critic Loss: {show_critic_losses[0]:.4f} -> {show_critic_losses[-1]:.4f}', file = f)
+			print(f'  PLAY Critic Loss: {play_critic_losses[0]:.4f} -> {play_critic_losses[-1]:.4f}', file = f)
+			print(f'  SHOW Explained Variance: {show_explained_variance:.4f}', file = f)
+			print(f'  PLAY Explained Variance: {play_explained_variance:.4f}', file = f)
+			print(f'  SHOW samples: {show_mask.sum().item()} | PLAY samples: {play_mask.sum().item()}', file = f)
+			print(f'  Mean KL Divergence: {np.mean(kl_divergences):.4f}', file = f)
+			print(f'  Mean Entropy: {np.mean(entropy_values):.4f}', file = f)
+			print(f'  Mean Clip Fraction: {np.mean(clip_fractions):.4f}', file = f)
+			print(f'  Explained Variance: {explained_variance:.4f}', file = f)
+			print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]', file = f)
+			print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}', file = f)
+			print(f'', file = f)
 
 		self.batch_num += 1
 
