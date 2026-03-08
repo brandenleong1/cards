@@ -217,8 +217,10 @@ function updateLobbies(data) {
 
 		let div2 = document.createElement('div');
 		div2.classList.add('content-text');
-		if (server.connected.length > server.gameData.maxPlayers) {
-			div2.innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
+
+		let playerCounts = getPlayerCounts(server);
+		if (playerCounts.spectators > 0) {
+			div2.innerText = 'Players: ' + playerCounts.players + ' + ' + playerCounts.spectators + ' \u{1F441}';
 		} else {
 			div2.innerText = 'Players: ' + server.connected.length;
 		}
@@ -248,8 +250,10 @@ function updateLobbies(data) {
 			document.querySelector('#load-lobby-name').innerText = server.name;
 			document.querySelector('#load-lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 			document.querySelector('#load-lobby-host').innerText = 'Host: ' + server.host;
+
+			let playerCounts = getPlayerCounts(server);
 			if (server.gameData.settings.spectatorPolicy != 'disallowed') {
-				document.querySelector('#load-lobby-users').innerText = 'Players: ' + Math.min(server.gameData.maxPlayers, server.connected.length) + ' + ' + Math.max(0, server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
+				document.querySelector('#load-lobby-users').innerText = 'Players: ' + playerCounts.players + ' + ' + playerCounts.spectators  + ' \u{1F441}';
 			} else {
 				document.querySelector('#load-lobby-users').innerText = 'Players: ' + server.connected.length;
 			}
@@ -270,12 +274,12 @@ function updateLobbies(data) {
 					if (j == 0) {
 						div2.innerText = (user.username == server.host ? '\u{1F732} ' : '');
 					} else if (j == 1) {
-						div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{1F441}' : '');
+						div2.innerText = ((user.spectateOnly || user.priority >= server.gameData.maxPlayers) ? '\u{1F441}' : '');
 					} else if (j == 2) {
 						div2.innerText = user.username;
 					}
 
-					if (user.priority >= server.gameData.maxPlayers) div2.style.filter = 'opacity(60%)';
+					if (user.spectateOnly || user.priority >= server.gameData.maxPlayers) div2.style.filter = 'opacity(60%)';
 
 					div1.append(div2);
 				}
@@ -283,13 +287,31 @@ function updateLobbies(data) {
 				list.append(div1);
 			}
 
-			await Popup.popup(popup);
+			let joinBtn = popup.querySelector('.button-positive-2#button-join-lobby');
+			if (joinBtn) {
+				joinBtn.onclick = function() {
+					this.onclick = null;
+					this.parentNode.parentNode.click();
+					ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
+				};
+			}
 
-			popup.querySelector('.button-positive-2').onclick = function() {
-				this.onclick = null;
-				this.parentNode.parentNode.click();
-				ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
-			};
+			let spectateBtn = popup.querySelector('.button-positive-2#button-spectate-lobby');
+			if (spectateBtn) {
+				if (server.gameData.settings.spectatorPolicy != 'disallowed') {
+					spectateBtn.style.display = null;
+					spectateBtn.onclick = function() {
+						this.onclick = null;
+						this.parentNode.parentNode.click();
+						ws.send(JSON.stringify({tag: 'joinLobby', data: server, spectateOnly: true}));
+					};
+				} else {
+					spectateBtn.style.display = 'none';
+					spectateBtn.onclick = null;
+				}
+			}
+
+			await Popup.popup(popup);
 		};
 	}
 }
@@ -336,8 +358,10 @@ function showLobby(data) {
 	document.querySelector('#lobby-name').innerText = 'Lobby [' + server.name + ']';
 	document.querySelector('#lobby-creation').innerText = 'Created: ' + parseTime(server.time) + '\nBy: ' + server.creator;
 	document.querySelector('#lobby-host').innerText = 'Host: ' + server.host;
-	if (server.connected.length > server.gameData.maxPlayers) {
-		document.querySelector('#lobby-users').innerText = 'Players: ' + server.gameData.maxPlayers + ' + ' + (server.connected.length - server.gameData.maxPlayers) + ' \u{1F441}';
+
+	let playerCounts = getPlayerCounts(server);
+	if (playerCounts.spectators > 0) {
+		document.querySelector('#lobby-users').innerText = 'Players: ' + playerCounts.players + ' + ' + playerCounts.spectators + ' \u{1F441}';
 	} else {
 		document.querySelector('#lobby-users').innerText = 'Players: ' + server.connected.length;
 	}
@@ -362,7 +386,7 @@ function showLobby(data) {
 			if (j == 0) {
 				div2.innerText = (user.username == server.host ? '\u{1F732} ' : '');
 			} else if (j == 1) {
-				div2.innerText = (user.priority >= server.gameData.maxPlayers ? '\u{1F441}' : '');
+				div2.innerText = ((user.spectateOnly || user.priority >= server.gameData.maxPlayers) ? '\u{1F441}' : '');
 			} else if (j == 2) {
 				div2.innerText = user.username + (user.username == username ? ' <= You' : '');
 			} else if (j == 3) {
@@ -372,7 +396,7 @@ function showLobby(data) {
 				div2.style.color = 'var(--color_txt2)';
 			}
 
-			if (user.priority >= server.gameData.maxPlayers) div2.style.filter = 'opacity(60%)';
+			if (user.spectateOnly || user.priority >= server.gameData.maxPlayers) div2.style.filter = 'opacity(60%)';
 
 			div1.append(div2);
 		}
@@ -431,6 +455,17 @@ function otherLeftLobby(data) {
 	document.querySelector('#game').style.display = 'none';
 	Popup.toastPopup('Player disconnected, returning to lobby...');
 	showLobby(data);
+}
+
+function getPlayerCounts(server) {
+	let spectateOnlyCount = server.connected.filter(e => e.spectateOnly).length;
+	let overflowSpectatorCount = Math.max(0, server.connected.length - spectateOnlyCount - server.gameData.maxPlayers);
+	return {
+		spectateOnly: spectateOnlyCount,
+		overflowSpectators: overflowSpectatorCount,
+		spectators: spectateOnlyCount + overflowSpectatorCount,
+		players: server.connected.length - spectateOnlyCount - overflowSpectatorCount
+	};
 }
 
 function startGame() {

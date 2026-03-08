@@ -252,6 +252,10 @@ export function getUsersSortedByPriority(server) {
 export function updatePriorities(server) {
 	let connected = getUsersSortedByPriority(server);
 
+	let players = connected.filter(e => !e.spectateOnly);
+	let spectators = connected.filter(e => e.spectateOnly);
+	connected = players.concat(spectators);
+
 	for (let i = 0; i < connected.length; i++) {
 		connected[i].priority = i;
 	}

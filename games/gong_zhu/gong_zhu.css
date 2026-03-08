@@ -27,6 +27,7 @@
 	position: relative;
 	font-size: 1.2em;
 	line-height: 1.4em;
+	height: calc(2.4em + 10px);
 	padding: 5px 0;
 }
 

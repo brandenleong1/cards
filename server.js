@@ -84,7 +84,7 @@ let messageDecoder = {
 	'joinLobby': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(data.data);
 		let server = game.gong_zhu.servers[idx];
-		let res = game.gong_zhu.joinServer(ws, data.data);
+		let res = game.gong_zhu.joinServer(ws, data.data, data.spectateOnly);
 		if (res[0] && server.gameData.gameState == '') {
 			Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'showLobby', status: res[0], data: res[1]});
 		} else {
@@ -129,7 +129,7 @@ let messageDecoder = {
 	'startGame': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
 		let server = game.gong_zhu.servers[idx];
-		if (server.connected.length < server.gameData.minPlayers) {
+		if (server.connected.filter(user => !user.spectateOnly).length < server.gameData.minPlayers) {
 			ws.send(JSON.stringify({
 				tag: 'broadcastedMessage',
 				data: `Insufficient players ${server.connected.length} < ${server.gameData.minPlayers}`

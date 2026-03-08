@@ -76,7 +76,7 @@ export function getServerIdx(serverData) {
 	});
 }
 
-export function joinServer(ws, server) {
+export function joinServer(ws, server, spectateOnly = false) {
 	let idx = getServerIdx(server);
 
 	if (idx == -1) return [0, 'Server does not exist'];
@@ -84,10 +84,11 @@ export function joinServer(ws, server) {
 	else {
 		let lowestPriority = Utils.getLowestPriority(servers[idx]);
 		if (lowestPriority == -Infinity) lowestPriority = -1;
-		Utils.binaryInsert(servers[idx].connected, {username: ws.username, priority: lowestPriority + 1}, function(a, b) {
+		Utils.binaryInsert(servers[idx].connected, {username: ws.username, priority: lowestPriority + 1, spectateOnly: spectateOnly}, function(a, b) {
 			return (a.username).localeCompare(b.username);
 		});
 		ws.connected = servers[idx];
+		Utils.updatePriorities(servers[idx]);
 		return [1, servers[idx]];
 	}
 }
@@ -126,24 +127,30 @@ export function updateServerSettings(server, settings) {
 	}
 }
 
+function removeSpectator(user, server) {
+	let ws = users.get(user.username);
+	let res = leaveServer(ws, server);
+	if (res[0]) {
+		ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators kicked'}));
+		ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
+		delete ws.connected;
+	}
+}
+
 export function removeAllSpectators(server) {
 	Utils.updatePriorities(server);
+
 	let toRemove = Utils.getUsersSortedByPriority(server);
+	toRemove.filter(user => user.spectateOnly).forEach(user => removeSpectator(user, server));
+
+	toRemove = Utils.getUsersSortedByPriority(server);
 	let hostIdx = toRemove.findIndex(user => user.username == server.host);
 	toRemove.splice(hostIdx, 1);
 	toRemove.splice(0, server.gameData.maxPlayers - 1);
 
 	console.log(toRemove);
 
-	toRemove.forEach(function(user) {
-		let ws = users.get(user.username);
-		let res = leaveServer(ws, server);
-		if (res[0]) {
-			ws.send(JSON.stringify({tag: 'broadcastedMessage', data: 'Spectators kicked'}));
-			ws.send(JSON.stringify({tag: 'leftLobby', status: res[0], data: res[1]}));
-			delete ws.connected;
-		}
-	});
+	toRemove.forEach(user => removeSpectator(user, server));
 
 	server.connected.forEach(user => users.get(user.username).send(JSON.stringify({tag: 'showLobby', status: 1, data: server})));
 }
@@ -198,14 +205,18 @@ function rotateSpectators(server) {
 		case 'round-robin': {
 			let previousPlayers = new Set(server.gameData.turnOrder);
 
-			let [front, end] = structuredClone(server.connected).reduce(function([p, f], e) {
+			let [spectateOnly, players] = structuredClone(server.connected).reduce(function([s, p], e) {
+				return (e.spectateOnly ? [[...s, e], p] : [s, [...p, e]]);
+			}, [[], []]);
+
+			let [front, end] = players.reduce(function([p, f], e) {
 				return (!previousPlayers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
 			}, [[], []]);
 
 			front.sort(prioritySort);
 			end.sort(prioritySort);
 
-			connected = front.concat(end);
+			connected = front.concat(end, spectateOnly);
 
 			break;
 		}
@@ -213,10 +224,14 @@ function rotateSpectators(server) {
 			let previousLosers = new Set(server.gameData.turnOrder.filter((e, i) => server.gameData.scores[i][0] <= server.gameData.settings.losingThreshold));
 			let previousWinners = new Set(server.gameData.turnOrder.filter((e, i) => server.gameDatas.scores[i][0] > server.gameData.settings.losingThreshold));
 
-			let [front2mid, end] = structuredClone(server.connected).reduce(function([p, f], e) {
+			let [spectateOnly, players] = structuredClone(server.connected).reduce(function([s, p], e) {
+				return (e.spectateOnly ? [[...s, e], p] : [s, [...p, e]]);
+			}, [[], []]);
+
+			let [front2mid, end] = players.reduce(function([p, f], e) {
 				return (!previousLosers.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
 			}, [[], []]);
-			let [front, mid] = structuredClone(front2mid).reduce(function([p, f], e) {
+			let [front, mid] = front2mid.reduce(function([p, f], e) {
 				return (previousWinners.has(e.username) ? [[...p, e], f] : [p, [...f, e]]);
 			}, [[], []]);
 
@@ -224,13 +239,17 @@ function rotateSpectators(server) {
 			mid.sort(prioritySort);
 			end.sort(prioritySort);
 
-			connected = front.concat(front, mid, end);
+			connected = front.concat(mid, end, spectateOnly);
 
 			break;
 		}
 		default: {
-			connected = structuredClone(server.connected);
-			connected.sort(prioritySort);
+			let [spectateOnly, players] = structuredClone(server.connected).reduce(function([s, p], e) {
+				return (e.spectateOnly ? [[...s, e], p] : [s, [...p, e]]);
+			}, [[], []]);
+
+			players.sort(prioritySort);
+			connected = players.concat(spectateOnly);
 		}
 	}
 
@@ -245,7 +264,7 @@ function rotateSpectators(server) {
 }
 
 function generateTurnOrder(server) {
-	let connected = structuredClone(server.connected).sort(function(a, b) {
+	let connected = structuredClone(server.connected).filter(user => !user.spectateOnly).sort(function(a, b) {
 		return a.priority - b.priority;
 	}).map(user => user.username);
 	return Utils.shuffleArray(connected.slice(0, server.gameData.maxPlayers));
