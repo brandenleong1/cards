@@ -222,7 +222,7 @@ function rotateSpectators(server) {
 		}
 		case 'replace-losers': {
 			let previousLosers = new Set(server.gameData.turnOrder.filter((e, i) => server.gameData.scores[i][0] <= server.gameData.settings.losingThreshold));
-			let previousWinners = new Set(server.gameData.turnOrder.filter((e, i) => server.gameDatas.scores[i][0] > server.gameData.settings.losingThreshold));
+			let previousWinners = new Set(server.gameData.turnOrder.filter((e, i) => server.gameData.scores[i][0] > server.gameData.settings.losingThreshold));
 
 			let [spectateOnly, players] = structuredClone(server.connected).reduce(function([s, p], e) {
 				return (e.spectateOnly ? [[...s, e], p] : [s, [...p, e]]);
@@ -280,8 +280,15 @@ export function initGame(server) {
 	}
 
 	gameData.turnOrder = generateTurnOrder(server);
+	initGameData(server);
 
-	for (let i = 0; i < server.gameData.turnOrder.length; i++) {
+	gameOFL(server);
+}
+
+function initGameData(server) {
+	let gameData = server.gameData;
+
+	for (let i = 0; i < gameData.turnOrder.length; i++) {
 		gameData.hands.push(new Array());
 		for (let j = 0; j < 4; j++) gameData.hands[i].push(new Array());
 		gameData.scores.push(new Array());
@@ -292,8 +299,6 @@ export function initGame(server) {
 	gameData.gameState = 'LEADERBOARD';
 	gameData.round = 0;
 	gameData.turnFirstIdx = 0;
-
-	gameOFL(server);
 }
 
 function gameNSL(server) {
@@ -490,7 +495,10 @@ export function processCommand(data, ws, server) {
 						let previousTurnOrder = new Set(gameData.turnOrder);
 
 						rotateSpectators(server);
+						clearGameData(server);
+
 						gameData.turnOrder = generateTurnOrder(server);
+						initGameData(server);
 
 						let newTurnOrder = new Set(gameData.turnOrder);
 
