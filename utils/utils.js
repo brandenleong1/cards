@@ -7,22 +7,22 @@ export function sleep(ms) {
 
 // type: string
 export function storageAvailable(type) {
-    let storage;
-    try {
-        storage = window[type];
-        const x = '__storage_test__';
-        storage.setItem(x, x);
-        storage.removeItem(x);
-        return true;
-    }
-    catch (e) {
-        return e instanceof DOMException && (
-            e.code === 22 ||
-            e.code === 1014 ||
-            e.name === 'QuotaExceededError' ||
-            e.name === 'NS_ERROR_DOM_QUOTA_REACHED') &&
-            (storage && storage.length !== 0);
-    }
+	let storage;
+	try {
+		storage = window[type];
+		const x = '__storage_test__';
+		storage.setItem(x, x);
+		storage.removeItem(x);
+		return true;
+	}
+	catch (e) {
+		return e instanceof DOMException && (
+			e.code === 22 ||
+			e.code === 1014 ||
+			e.name === 'QuotaExceededError' ||
+			e.name === 'NS_ERROR_DOM_QUOTA_REACHED') &&
+			(storage && storage.length !== 0);
+	}
 }
 
 // e: any, ...class_constructors: [Class]
@@ -41,7 +41,7 @@ export function isClass(e, ...class_constructors) {
 // e: HTMLDivElement
 export function clearDiv(e) {
 	while (e.firstChild) {
-    	e.removeChild(e.firstChild);
+		e.removeChild(e.firstChild);
 	}
 }
 
@@ -148,6 +148,31 @@ export function sortArrayFromIndices(arr, indices) {
 	return newArr;
 }
 
+function JSONStringifySerializer(key, value) {
+	if (typeof value === 'bigint') return {$bigint: value.toString()};
+	return value;
+}
+
+export function JSONStringify(data) {
+	return JSON.stringify(data, JSONStringifySerializer);
+}
+
+function JSONParseSerializer(key, value) {
+	if (typeof value === 'object' && value !== null && typeof value.$bigint === 'string') {
+		try {
+			return BigInt(value.$bigint);
+		} catch (e) {
+			return value;
+		}
+	} else {
+		return value;
+	}
+}
+
+export function JSONParse(data) {
+	return JSON.parse(data, JSONParseSerializer);
+}
+
 export function nullify(arr) {
 	for (let i = 0; i < arr.length; i++) {
 		if (Array.isArray(arr[i])) {
@@ -161,7 +186,7 @@ export function nullify(arr) {
 export function broadcastToConnected(users, server, data, ...ignoredUsernames) {
 	for (let user of server.connected) {
 		let ws = users.get(user.username);
-		if (!ignoredUsernames.includes(user.username) && ws.active) ws.send(JSON.stringify(data));
+		if (!ignoredUsernames.includes(user.username) && ws.active) ws.send(JSONStringify(data));
 	}
 }
 
@@ -176,20 +201,22 @@ export function broadcastGameStateToConnected(users, server, obfuscateFunc = nul
 
 		if (ws.active) {
 			if (obfuscateFunc) {
-				ws.send(JSON.stringify({
+				ws.send(JSONStringify({
 					tag: 'updateGUI',
 					data: {
 						gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
 						serverData: serverInfo
-					}
+					},
+					timestamp: Date.now()
 				}));
 			} else {
-				ws.send(JSON.stringify({
+				ws.send(JSONStringify({
 					tag: 'updateGUI',
 					data: {
 						gameData: gameData,
 						serverData: serverInfo
-					}
+					},
+					timestamp: Date.now()
 				}));
 			}
 		}
@@ -204,20 +231,22 @@ export function broadcastGameState(ws, server, obfuscateFunc = null) {
 	let username = ws.username;
 
 	if (obfuscateFunc) {
-		ws.send(JSON.stringify({
+		ws.send(JSONStringify({
 			tag: 'updateGUI',
 			data: {
 				gameData: obfuscateFunc(gameData, gameData.turnOrder.findIndex(e => e == username)),
 				serverData: serverInfo
-			}
+			},
+			timestamp: Date.now()
 		}));
 	} else {
-		ws.send(JSON.stringify({
+		ws.send(JSONStringify({
 			tag: 'updateGUI',
 			data: {
 				gameData: gameData,
 				serverData: serverInfo
-			}
+			},
+			timestamp: Date.now()
 		}));
 	}
 }
@@ -251,10 +280,6 @@ export function getUsersSortedByPriority(server) {
 
 export function updatePriorities(server) {
 	let connected = getUsersSortedByPriority(server);
-
-	let players = connected.filter(e => !e.spectateOnly);
-	let spectators = connected.filter(e => e.spectateOnly);
-	connected = players.concat(spectators);
 
 	for (let i = 0; i < connected.length; i++) {
 		connected[i].priority = i;

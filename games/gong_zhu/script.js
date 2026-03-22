@@ -39,15 +39,15 @@ function initWebSocket() {
 		ws.addEventListener('open', function(e) {
 			if (Cookies.getCookie('sessionID')) {
 				console.log('Checking Session ID', Cookies.getCookie('sessionID'));
-				ws.send(JSON.stringify({tag: 'checkSessionID', data: Cookies.getCookie('sessionID')}));
+				ws.send(Utils.JSONStringify({tag: 'checkSessionID', data: Cookies.getCookie('sessionID'), timestamp: Date.now()}));
 			} else {
 				console.log('Requesting new Session ID');
-				ws.send(JSON.stringify({tag: 'requestSessionID'}));
+				ws.send(Utils.JSONStringify({tag: 'requestSessionID', timestamp: Date.now()}));
 			}
 		});
 
 		ws.addEventListener('message', function(message) {
-			let data = JSON.parse(message.data);
+			let data = Utils.JSONParse(message.data);
 			let tags = data.tag.split('/');
 			let func;
 			for (let i = 0; i < tags.length; i++) {
@@ -133,7 +133,7 @@ function submitUsername() {
 		btn.style.filter = 'brightness(0.5)';
 		btn.style.cursor = 'not-allowed';
 
-		ws.send(JSON.stringify({tag: 'requestUsername', data: username}));
+		ws.send(Utils.JSONStringify({tag: 'requestUsername', data: username, timestamp: Date.now()}));
 	}
 }
 
@@ -164,7 +164,7 @@ function receiveUsername(data) {
 }
 
 function getLobbies() {
-	ws.send(JSON.stringify({tag: 'getLobbies'}));
+	ws.send(Utils.JSONStringify({tag: 'getLobbies', timestamp: Date.now()}));
 }
 
 function updateUserCount(data) {
@@ -292,7 +292,7 @@ function updateLobbies(data) {
 				joinBtn.onclick = function() {
 					this.onclick = null;
 					this.parentNode.parentNode.click();
-					ws.send(JSON.stringify({tag: 'joinLobby', data: server}));
+					ws.send(Utils.JSONStringify({tag: 'joinLobby', data: server, timestamp: Date.now()}));
 				};
 			}
 
@@ -303,7 +303,7 @@ function updateLobbies(data) {
 					spectateBtn.onclick = function() {
 						this.onclick = null;
 						this.parentNode.parentNode.click();
-						ws.send(JSON.stringify({tag: 'joinLobby', data: server, spectateOnly: true}));
+						ws.send(Utils.JSONStringify({tag: 'joinLobby', data: server, spectateOnly: true, timestamp: Date.now()}));
 					};
 				} else {
 					spectateBtn.style.display = 'none';
@@ -329,7 +329,7 @@ function createLobby() {
 		}
 	}
 
-	ws.send(JSON.stringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}}));
+	ws.send(Utils.JSONStringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}, timestamp: Date.now()}));
 }
 
 function joinLobby(data) {
@@ -337,7 +337,7 @@ function joinLobby(data) {
 		Popup.toastPopup(data.data);
 		return;
 	}
-	ws.send(JSON.stringify({tag: 'joinLobby', data: data.data}));
+	ws.send(Utils.JSONStringify({tag: 'joinLobby', data: data.data, timestamp: Date.now()}));
 }
 
 function showLobby(data) {
@@ -412,12 +412,12 @@ document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gam
 for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings select')) {
 	if (username == server.host) {
 		e.onchange = function() {
-			ws.send(JSON.stringify({tag: 'updateLobbySettings', data: {settings: {
+			ws.send(Utils.JSONStringify({tag: 'updateLobbySettings', data: {settings: {
 				spectatorPolicy: document.querySelector('#lobby-settings-spectator-policy').value,
 				losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
 				expose3: document.querySelector('#lobby-settings-expose-3').checked,
 				zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
-				}}}));
+				}}, timestamp: Date.now()}));
 			};
 			e.disabled = false;
 		} else {
@@ -430,7 +430,7 @@ for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings 
 }
 
 function leaveLobby() {
-	ws.send(JSON.stringify({tag: 'leaveLobby'}));
+	ws.send(Utils.JSONStringify({tag: 'leaveLobby', timestamp: Date.now()}));
 }
 
 function leftLobby(data) {
@@ -469,7 +469,7 @@ function getPlayerCounts(server) {
 }
 
 function startGame() {
-	ws.send(JSON.stringify({tag: 'startGame'}));
+	ws.send(Utils.JSONStringify({tag: 'startGame', timestamp: Date.now()}));
 }
 
 function startedGame(data) {
@@ -488,7 +488,7 @@ function sendCommand() {
 		let code = document.createElement('code');
 		code.innerText = '>> ' + data;
 		document.querySelector('#game-console-output').append(code);
-		ws.send(JSON.stringify({tag: 'sendCommand', data: data}));
+		ws.send(Utils.JSONStringify({tag: 'sendCommand', data: data, timestamp: Date.now(), currentFrame: gameDataOld?.currentFrame}));
 		document.querySelector('#game-console-input').value = '';
 		code.scrollIntoView({behavior: 'smooth', block: 'end'});
 	}
@@ -509,7 +509,7 @@ function receiveCommand(data) {
 function sendChat() {
 	let data = document.querySelector('#game-chat-input').value.trim();
 	if (data) {
-		ws.send(JSON.stringify({tag: 'sendChat', data: data}));
+		ws.send(Utils.JSONStringify({tag: 'sendChat', data: data, timestamp: Date.now()}));
 		document.querySelector('#game-chat-input').value = '';
 	}
 }
@@ -663,38 +663,10 @@ async function drawGUI(data) { // TODO animation
 				}
 				break;
 			}
-			case 'PLAY_1': {
-				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 1) % gameData.turnOrder.length]) {
-					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-					if (filtered.length == 1) {
-						filtered.forEach(e => playableCards.add(e));
-					} else if (filtered.length) {
-						filtered.forEach(e => {
-							if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
-						});
-					} else {
-						gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
-					}
-				}
-				break;
-			}
-			case 'PLAY_2': {
-				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 2) % gameData.turnOrder.length]) {
-					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
-					if (filtered.length == 1) {
-						filtered.forEach(e => playableCards.add(e));
-					} else if (filtered.length) {
-						filtered.forEach(e => {
-							if (!gameData.hands[myIdx][1].includes(e)) playableCards.add(e);
-						});
-					} else {
-						gameData.hands[myIdx][0].forEach(e => playableCards.add(e));
-					}
-				}
-				break;
-			}
+			case 'PLAY_1': {}
+			case 'PLAY_2': {}
 			case 'PLAY_3': {
-				if (username == gameData.turnOrder[(gameData.turnFirstIdx + 3) % gameData.turnOrder.length]) {
+				if (username == gameData.turnOrder[(gameData.turnFirstIdx + parseInt(gameData.gameState[gameData.gameState.length - 1])) % gameData.turnOrder.length]) {
 					let filtered = Cards.filterBySuit(gameData.hands[gameData.turnFirstIdx][3][0], gameData.hands[myIdx][0]);
 					if (filtered.length == 1) {
 						filtered.forEach(e => playableCards.add(e));
@@ -813,7 +785,7 @@ async function drawGUI(data) { // TODO animation
 	// 	drawGUI({data: {gameData: gameDataNew, serverData: server}});
 	// }
 
-	gameDataOld = data;
+	gameDataOld = data.data.gameData;
 }
 
 function toggleDebug(data) {
