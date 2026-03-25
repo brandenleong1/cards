@@ -103,13 +103,45 @@ class ConsoleListeners:
 			'timestamp': int(time.time() * 100)
 		}))
 
+class TrickSequenceEncoder(torch.nn.Module):
+	def __init__(self, hidden_dim: int = 128, num_gru_layers: int = 1) -> None:
+		super().__init__()
+
+		self.hidden_dim = hidden_dim
+		self.proj = torch.nn.LazyLinear(hidden_dim)
+		self.gru = torch.nn.GRU(hidden_dim, hidden_dim, num_layers = num_gru_layers, batch_first = True)
+
+	def forward(self, play_history: torch.Tensor, leader_history: torch.Tensor) -> torch.Tensor:
+		# play_history:			(B, T, P, C)
+		# leader_history.shape:	(B, T, P)
+
+		B, T, P, C = play_history.shape
+
+		# (B, T, P * C + P)
+		tricks = torch.concatenate([
+			play_history.reshape(B, T, P * C),
+			leader_history
+		], dim = -1)
+
+		tricks_active = tricks.abs().sum(dim = -1) > 0			# (B, T)
+		lengths = tricks_active.sum(dim = 1).clamp(min = 1)		# (B, )
+
+		tricks = torch.relu(self.proj(tricks))					# (B, T, hidden_dim)
+		outputs, _ = self.gru(tricks)							# (B, T, hidden_dim)
+
+		idx = (lengths - 1).unsqueeze(-1).unsqueeze(-1).expand(-1, 1, self.hidden_dim)
+		last_output = outputs.gather(1, idx).squeeze(1)			# (B, hidden_dim)
+
+		return last_output
+
 class ActorNN(torch.nn.Module):
 	def __init__(
 		self,
 		module_type: str,
 		network_dims: tuple[int, ...],
 		state_encoder_dims: tuple[int, ...],
-		history_encoder_dims: tuple[int, ...]
+		history_hidden_dim: int = 128,
+		history_num_layers: int = 1
 	) -> None:
 
 		super().__init__()
@@ -123,8 +155,9 @@ class ActorNN(torch.nn.Module):
 			*[e for dim in state_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
 		)
 
-		self.history_encoder = torch.nn.Sequential(
-			*[e for dim in history_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
+		self.history_encoder = TrickSequenceEncoder(
+			hidden_dim = history_hidden_dim,
+			num_gru_layers = history_num_layers
 		)
 
 		self.network = torch.nn.Sequential(
@@ -135,10 +168,10 @@ class ActorNN(torch.nn.Module):
 		# inputs.shape:	(B, dim(obs))
 		# mask.shape:	(B, dim(act))
 
-		state, history = MultiAgentEnv.serialize_state(states)
+		state, play_history, leader_history = MultiAgentEnv.serialize_state(states)
 
 		state = self.state_encoder(state)
-		history = self.history_encoder(history)
+		history = self.history_encoder(play_history, leader_history)
 
 		inputs = torch.concatenate([state, history], dim = -1)
 
@@ -231,10 +264,10 @@ class ActorNN(torch.nn.Module):
 		# actions.shape:	(B, dim(act))
 		# masks.shape:		(B, dim(act))
 
-		state, history = MultiAgentEnv.serialize_state(states)
+		state, play_history, leader_history = MultiAgentEnv.serialize_state(states)
 
 		state = self.state_encoder(state)
-		history = self.history_encoder(history)
+		history = self.history_encoder(play_history, leader_history)
 
 		inputs = torch.concatenate([state, history], dim = -1)
 
@@ -291,7 +324,8 @@ class CriticNN(torch.nn.Module):
 		self,
 		network_dims: tuple[int, ...],
 		state_encoder_dims: tuple[int, ...],
-		history_encoder_dims: tuple[int, ...]
+		history_hidden_dim: int = 128,
+		history_num_layers: int = 1
 	) -> None:
 
 		super().__init__()
@@ -300,8 +334,9 @@ class CriticNN(torch.nn.Module):
 			*[e for dim in state_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
 		)
 
-		self.history_encoder = torch.nn.Sequential(
-			*[e for dim in history_encoder_dims for e in (torch.nn.LazyLinear(dim), torch.nn.ReLU())]
+		self.history_encoder = TrickSequenceEncoder(
+			hidden_dim = history_hidden_dim,
+			num_gru_layers = history_num_layers
 		)
 
 		self.network = torch.nn.Sequential(
@@ -313,10 +348,10 @@ class CriticNN(torch.nn.Module):
 		# inputs.shape: (B, dim(obs))
 		# return.shape: (B,)
 
-		state, history = MultiAgentEnv.serialize_state(states)
+		state, play_history, leader_history = MultiAgentEnv.serialize_state(states)
 
 		state = self.state_encoder(state)
-		history = self.history_encoder(history)
+		history = self.history_encoder(play_history, leader_history)
 
 		inputs = torch.concatenate([state, history], dim = -1)
 
@@ -378,7 +413,7 @@ class MultiAgentEnv:
 		self.max_timesteps_per_episode: int =		200
 
 		self.reward_scale: float =					1.0 / 10
-		self.opponent_temperature: float =			0.3
+		self.opponent_temperature: float =			0.05
 
 		# PPO Parameters
 		self.gamma: float =							0.95
@@ -386,7 +421,7 @@ class MultiAgentEnv:
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				8
 		self.mini_batch_size: int =					256
-		self.actor_lr: float =						3e-5
+		self.actor_lr: float =						6e-5
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
@@ -450,14 +485,14 @@ class MultiAgentEnv:
 
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (512, 256, 128, 13), (256, 128), (128, 64)),
-			'PLAY': ActorNN('PLAY', (512, 256, 128, 13), (256, 128), (128, 64))
+			'SHOW': ActorNN('SHOW', (512, 256, 128, 13), (512, 256), 128),
+			'PLAY': ActorNN('PLAY', (512, 256, 128, 13), (512, 256), 128)
 		})
 
 	def create_critic(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': CriticNN((512, 256, 128), (256, 128), (256, 128, 64)),
-			'PLAY': CriticNN((512, 256, 128), (512, 256), (1024, 512, 256))
+			'SHOW': CriticNN((512, 256, 128), (512, 256), 128),
+			'PLAY': CriticNN((1024, 512, 256, 128), (512, 256), 128)
 		})
 
 	def save_checkpoint(self) -> None:
@@ -530,12 +565,16 @@ class MultiAgentEnv:
 			return
 
 		else:
-			weights = self.get_opponent_sampling_weights(model_paths)
-
 			log_path = None
 			if self.args.save_dir is not None:
 				os.makedirs(self.args.save_dir, exist_ok = True)
 				log_path = os.path.join(self.args.save_dir, 'log.txt')
+
+			if self.args.opponent_sampling == 'latest':
+				weights = np.zeros(len(model_paths))
+				weights[-1] = 1
+			elif self.args.opponent_sampling == 'mixed':
+				weights = self.get_opponent_sampling_weights(model_paths)
 
 			if log_path is not None:
 				with open(log_path, 'a') as f:
@@ -1431,12 +1470,30 @@ class MultiAgentEnv:
 		}
 
 	@staticmethod
-	def serialize_state(states: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+	def serialize_state(states: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-		state = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['state']], dim = -1)
-		history = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['history']], dim = -1)
+		num_players = GAME_SETTINGS['NUM_PLAYERS']
+		num_cards = GAME_SETTINGS['NUM_CARDS']
+		num_tricks = math.ceil(num_cards / num_players)
 
-		return state, history
+		play_history = states['play_history'].reshape(-1, num_tricks, num_players, num_cards)
+		leader_history = states['leader_history'].reshape(-1, num_tricks, num_players)
+
+		cards_played_per_player = play_history.sum(dim = 1).flatten(start_dim = 1)			# (B, P * C)
+		cards_remaining = 1 - play_history.sum(dim = (1, 2)).clamp(0, 1)					# (B, C)
+		tricks_won = leader_history.sum(dim = 1)											# (B, P)
+		trick_number = leader_history.any(dim = -1).sum(dim = -1, keepdim = True).float()	# (B, 1)
+
+		state_parts = [states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['state']]
+		state_parts.extend([cards_played_per_player, cards_remaining, tricks_won, trick_number])
+		state = torch.concatenate(state_parts, dim = -1)
+
+		return state, play_history, leader_history
+
+		# state = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['state']], dim = -1)
+		# history = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['history']], dim = -1)
+
+		# return state, history
 
 	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
 		start_time = time.time()
@@ -1489,7 +1546,10 @@ class MultiAgentEnv:
 	async def train_post_rollout(self) -> None:
 		training_agents_idxs = [ws_idx for ws_idx in range(self.num_agents) if self._opponent_actors[ws_idx] is None]
 
+		eps = 1e-9
+
 		batch_advantages, batch_returns =	self.compute_gaes()																		# (B,), (B,)
+		batch_returns = (batch_returns - batch_returns.mean()) / (batch_returns.std() + eps)
 
 		batch_state_dicts =		[
 									state for ws_idx in training_agents_idxs
@@ -1514,8 +1574,6 @@ class MultiAgentEnv:
 		game_states = batch_states['game_state']
 		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
 		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
-
-		eps = 1e-9
 
 		for mask in (show_mask, play_mask):
 			if mask.sum() > 1:
@@ -2040,6 +2098,11 @@ def parse_arguments() -> argparse.Namespace:
 	parser.add_argument(
 		'--save-dir', type = str, default = '.',
 		help = 'Where to save model files during training'
+	)
+	parser.add_argument(
+		'--opponent-sampling', type = str,
+		choices = ['latest', 'mixed'], default = 'latest',
+		help = 'Use latest or mixed checkpoints (if available)'
 	)
 
 	# Inference Options
