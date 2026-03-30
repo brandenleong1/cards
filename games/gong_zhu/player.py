@@ -252,12 +252,15 @@ class ActorNN(torch.nn.Module):
 			raise ValueError(f'Unknown game_state [{game_state}]')
 
 		out_dim = self.network[-1].out_features
+		mask = np.zeros(out_dim, dtype = np.float32)
+		valid = np.fromiter(legal_cards, dtype = np.intp)
+		mask[valid[valid < out_dim]] = 1
 
-		hand = np.where(state['hand'] == 1)[0]
-		masked_hand = np.where(np.isin(hand, list(legal_cards)), 1, 0)
-		padded_hand = np.pad(masked_hand, pad_width = (0, out_dim - len(masked_hand)), mode = 'constant', constant_values = 0)
+		# hand = np.where(state['hand'] == 1)[0]
+		# masked_hand = np.where(np.isin(hand, list(legal_cards)), 1, 0)
+		# padded_hand = np.pad(masked_hand, pad_width = (0, out_dim - len(masked_hand)), mode = 'constant', constant_values = 0)
 
-		return padded_hand
+		return mask
 
 	def evaluate_actions(self, states: dict[str, torch.Tensor], actions: torch.Tensor, masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 		# states.shape:		(B, dim(obs))
@@ -387,7 +390,7 @@ class MultiAgentEnv:
 		self.mode: MultiAgentEnv.ModelModes =										mode
 		self.is_waiting_for_spectator: bool =										False
 		self.batch_num: int =														0
-		self.save_checkpoint_frequency: int =										10
+		self.save_checkpoint_frequency: int =										20
 
 		self._is_processing_event: list[bool] =										[False			for _ in range(self.num_agents)]
 		self._event_queue: list[list[tuple[str, float]]] =							[list()			for _ in range(self.num_agents)] # (message, timestamp)
@@ -402,7 +405,7 @@ class MultiAgentEnv:
 		self.critic = self.create_critic()
 
 		self.elo_rating_system = EloRatingSystem(k_factor = self.args.k_factor)
-		self.eval_games_per_match: int =			5
+		self.eval_games_per_match: int =			20
 		self.eval_total_matches: int =				0
 		self.eval_total_games: int =				0
 
@@ -421,7 +424,7 @@ class MultiAgentEnv:
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				8
 		self.mini_batch_size: int =					256
-		self.actor_lr: float =						6e-5
+		self.actor_lr: float =						3e-5
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
@@ -485,8 +488,8 @@ class MultiAgentEnv:
 
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (512, 256, 128, 13), (512, 256), 128),
-			'PLAY': ActorNN('PLAY', (512, 256, 128, 13), (512, 256), 128)
+			'SHOW': ActorNN('SHOW', (512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (512, 256), 128),
+			'PLAY': ActorNN('PLAY', (512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (512, 256), 128)
 		})
 
 	def create_critic(self) -> torch.nn.ModuleDict:
@@ -502,11 +505,11 @@ class MultiAgentEnv:
 			'critic_state_dict': self.critic.state_dict(),
 			'training_history': self.training_history
 		}
-		path = os.path.join(self.args.save_dir, f'gong_zhu_player_{self.batch_num}.pt')
+		path = os.path.join(self.args.model_dir, f'gong_zhu_player_{self.batch_num}.pt')
 
-		os.makedirs(self.args.save_dir, exist_ok = True)
+		os.makedirs(self.args.model_dir, exist_ok = True)
 
-		fd, tmp_path = tempfile.mkstemp(dir = self.args.save_dir, suffix = '.pt.tmp')
+		fd, tmp_path = tempfile.mkstemp(dir = self.args.model_dir, suffix = '.pt.tmp')
 
 		try:
 			os.close(fd)
@@ -537,7 +540,7 @@ class MultiAgentEnv:
 
 		# Init Lazy Modules
 		dummy_input = MultiAgentEnv.get_dummy_state()
-		dummy_mask = torch.ones(1, 13)
+		dummy_mask = torch.ones(1, GAME_SETTINGS['NUM_CARDS'])
 
 		with torch.no_grad():
 			actor['SHOW'](dummy_input, dummy_mask)
@@ -557,7 +560,7 @@ class MultiAgentEnv:
 		return weights
 
 	def load_opponent_models(self) -> None:
-		model_paths = self.get_models_in_directory(self.args.save_dir)
+		model_paths = self.get_models_in_directory(self.args.model_dir)
 
 		if len(model_paths) == 0:
 			for ws_idx in range(1, self.num_agents):
@@ -566,9 +569,9 @@ class MultiAgentEnv:
 
 		else:
 			log_path = None
-			if self.args.save_dir is not None:
-				os.makedirs(self.args.save_dir, exist_ok = True)
-				log_path = os.path.join(self.args.save_dir, 'log.txt')
+			if self.args.model_dir is not None:
+				os.makedirs(self.args.model_dir, exist_ok = True)
+				log_path = os.path.join(self.args.model_dir, self.args.log_file)
 
 			if self.args.opponent_sampling == 'latest':
 				weights = np.zeros(len(model_paths))
@@ -1347,20 +1350,43 @@ class MultiAgentEnv:
 		return actions, log_probs, inputs, mask
 
 	async def act(self, action: torch.Tensor, ws_idx: int, turn_idx: int) -> None:
+		# if self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
+		# 	cards_to_play = torch.nonzero(action, as_tuple=True)[0]
+		# 	hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
+		# 	selected_cards = hand[cards_to_play].tolist()
+		# 	hand_in_obs = self._latest_observation[ws_idx]['hands'][turn_idx][0]
+
+		# 	log_path = None
+		# 	if self.args.model_dir is not None:
+		# 		os.makedirs(self.args.model_dir, exist_ok = True)
+		# 		log_path = os.path.join(self.args.model_dir, self.args.log_file)
+
+		# 	if log_path is not None:
+		# 		with open(log_path, 'a') as f:
+		# 			print(f'Hand (state):  {hand.tolist()}', file = f)
+		# 			print(f'Hand (obs):    {hand_in_obs}', file = f)
+		# 			print(f'Action idx:    {cards_to_play.tolist()}', file = f)
+		# 			print(f'Selected card: {selected_cards}', file = f)
+		# 			print(f'Mask was:      {self._latest_state[ws_idx]}', file = f)  # check action mask
+
 		commands = []
 		if self._latest_observation[ws_idx]['gameState'].startswith('SHOW'):
 			if torch.sum(action).item() != 0:
-				cards_to_play = torch.nonzero(action, as_tuple = True)[0]
-				hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-				cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
+				# cards_to_play = torch.nonzero(action, as_tuple = True)[0]
+				# hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
+				# cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
+				cards_to_play = torch.nonzero(action, as_tuple = True)[0].tolist()
+				cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], cards_to_play))[0].tolist()
 
 				args = ' '.join([str(e) for e in cards_to_play_idxs])
 				commands.append('PLAY ' + args)
 			commands.append('PASS')
 		elif self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
-			cards_to_play = torch.nonzero(action, as_tuple = True)[0]
-			hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-			cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
+			# cards_to_play = torch.nonzero(action, as_tuple = True)[0]
+			# hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
+			# cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
+			cards_to_play = torch.nonzero(action, as_tuple = True)[0].tolist()
+			cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], cards_to_play))[0].tolist()
 
 			args = ' '.join([str(e) for e in cards_to_play_idxs])
 			commands.append('PLAY ' + args)
@@ -1686,6 +1712,22 @@ class MultiAgentEnv:
 					clip_fraction = ((ratios - 1.0).abs() > self.clip_epsilon).float().mean().item()
 					clip_fractions.append(clip_fraction)
 
+		# all_rewards = np.concatenate([
+		# 	r for ws_idx in training_agents_idxs
+		# 	for r in self._batch_rewards[ws_idx]
+		# ])
+		# nonzero_frac = (all_rewards != 0).mean()
+
+		# log_path = None
+		# if self.args.model_dir is not None:
+		# 	os.makedirs(self.args.model_dir, exist_ok = True)
+		# 	log_path = os.path.join(self.args.model_dir, self.args.log_file)
+
+		# if log_path is not None:
+		# 	with open(log_path, 'a') as f:
+		# 		print(f'Non-zero reward fraction: {nonzero_frac:.3f}', file = f)
+		# 		print(f'Reward stats: mean={all_rewards.mean():.4f}, std={all_rewards.std():.4f}', file = f)
+
 		all_episode_rewards = [rewards.sum() for ws_idx in training_agents_idxs for rewards in self._batch_rewards[ws_idx]]
 
 		with torch.no_grad():
@@ -1711,8 +1753,8 @@ class MultiAgentEnv:
 		self.training_history.setdefault('min_episode_reward', []).append(min(all_episode_rewards) if all_episode_rewards else 0)
 		self.training_history.setdefault('mean_episode_reward', []).append(np.mean(all_episode_rewards) if all_episode_rewards else 0)
 
-		log_path = os.path.join(self.args.save_dir, 'log.txt')
-		os.makedirs(self.args.save_dir, exist_ok = True)
+		log_path = os.path.join(self.args.model_dir, self.args.log_file)
+		os.makedirs(self.args.model_dir, exist_ok = True)
 		with open(log_path, 'a') as f:
 			print(f'-- Training Complete (Batch {self.batch_num}) --', file = f)
 			print(f'  Total Samples: {batch_len}', file = f)
@@ -1730,6 +1772,25 @@ class MultiAgentEnv:
 			print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]', file = f)
 			print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}', file = f)
 			print(f'', file = f)
+
+		# with torch.no_grad():
+		# 	sample_idx = torch.randperm(batch_len)[:20]
+		# 	sample_states = MultiAgentEnv.get_masked_states(batch_states, sample_idx)
+		# 	sample_returns = batch_returns[sample_idx]
+
+		# 	predicted = torch.zeros(20)
+		# 	for i, idx in enumerate(sample_idx):
+		# 		if play_mask[idx]:
+		# 			predicted[i] = self.critic['PLAY'](
+		# 				MultiAgentEnv.get_masked_states(batch_states, idx.unsqueeze(0))
+		# 			)
+
+		# 	with open(log_path, 'a') as f:
+		# 		for i in range(10):
+		# 			trick_num = sample_states['game_state'][i].argmax().item()
+		# 			print(f'  State {i}: game_state={trick_num}, '
+		# 				f'predicted={predicted[i]:.3f}, '
+		# 				f'actual={sample_returns[i]:.3f}', file = f)
 
 		self.batch_num += 1
 
@@ -1855,11 +1916,15 @@ class MultiAgentEnv:
 
 			batch_model_names = [os.path.basename(p) for p in batch_models]
 			batch_model_ratings = [f'{self.elo_rating_system.get_rating(p):.2f}' for p in batch_models]
-			print(f'')
-			print(f' === Starting Evaluation Matchup === ')
-			print(f'  Models: {batch_model_names}')
-			print(f'  Ratings: {batch_model_ratings}')
-			print(f'  Games to Play: {self.eval_games_per_match}')
+
+			log_path = os.path.join(self.args.model_dir, self.args.log_file)
+			os.makedirs(self.args.model_dir, exist_ok = True)
+			with open(log_path, 'a') as f:
+				print(f'', file = f)
+				print(f' === Starting Evaluation Matchup === ', file = f)
+				print(f'  Models: {batch_model_names}', file = f)
+				print(f'  Ratings: {batch_model_ratings}', file = f)
+				print(f'  Games to Play: {self.eval_games_per_match}', file = f)
 
 			# Play [self.eval_games_per_match] Games
 			for game_idx in range(self.eval_games_per_match):
@@ -1888,17 +1953,20 @@ class MultiAgentEnv:
 
 					rating_changes = self.elo_rating_system.update_ratings(self.eval_model_paths, self.eval_scores)
 
-					print(f' --- Eval Game {game_idx + 1} / {self.eval_games_per_match} ---')
-					print(f'  Total Games: {self.eval_total_games}')
-					print(f'  Scores: {self.eval_scores}')
-					for i in range(self.num_agents):
-						model_path = self.eval_model_paths[i]
-						model_name = os.path.basename(model_path)
-						rating = self.elo_rating_system.get_rating(model_path)
-						change = rating_changes.get(model_path, 0)
-						print(f'  Agent {i} [{model_name}]:')
-						print(f'    Score = {self.eval_scores[i]}')
-						print(f'    ELO = {rating:.4f} ({change:.4f})')
+					log_path = os.path.join(self.args.model_dir, self.args.log_file)
+					os.makedirs(self.args.model_dir, exist_ok = True)
+					with open(log_path, 'a') as f:
+						print(f' --- Eval Game {game_idx + 1} / {self.eval_games_per_match} ---', file = f)
+						print(f'  Total Games: {self.eval_total_games}', file = f)
+						print(f'  Scores: {self.eval_scores}', file = f)
+						for i in range(self.num_agents):
+							model_path = self.eval_model_paths[i]
+							model_name = os.path.basename(model_path)
+							rating = self.elo_rating_system.get_rating(model_path)
+							change = rating_changes.get(model_path, 0)
+							print(f'  Agent {i} [{model_name}]:', file = f)
+							print(f'    Score = {self.eval_scores[i]}', file = f)
+							print(f'    ELO = {rating:.4f} ({change:.4f})', file = f)
 
 					self.save_all_ratings()
 
@@ -1921,15 +1989,19 @@ class MultiAgentEnv:
 
 	def print_leaderboard(self) -> None:
 		leaderboard = self.elo_rating_system.get_leaderboard()
-		print(f'')
-		print(f'{"=" * 60}')
-		print(f' ELO LEADERBOARD (after {self.eval_total_games} games)')
-		print(f' {"Rank":<6}{"Model":<35}{"ELO":<8}{"Games":<8}')
-		print(f' {"-" * 58} ')
-		for rank, (path, rating, games) in enumerate(leaderboard, 1):
-			name = os.path.basename(path)
-			print(f' {rank:<6}{name:<35}{rating:<8.2f}{games:<8}')
-		print(f'{"=" * 60}')
+
+		log_path = os.path.join(self.args.model_dir, self.args.log_file)
+		os.makedirs(self.args.model_dir, exist_ok = True)
+		with open(log_path, 'a') as f:
+			print(f'', file = f)
+			print(f'{"=" * 60}', file = f)
+			print(f' ELO LEADERBOARD (after {self.eval_total_games} games)', file = f)
+			print(f' {"Rank":<6}{"Model":<35}{"ELO":<8}{"Games":<8}', file = f)
+			print(f' {"-" * 58} ', file = f)
+			for rank, (path, rating, games) in enumerate(leaderboard, 1):
+				name = os.path.basename(path)
+				print(f' {rank:<6}{name:<35}{rating:<8.2f}{games:<8}', file = f)
+			print(f'{"=" * 60}', file = f)
 
 	def save_all_ratings(self) -> None:
 		saved_ratings_count = 0
@@ -2096,13 +2168,17 @@ def parse_arguments() -> argparse.Namespace:
 		help = 'Wait for spectators to join'
 	)
 	parser.add_argument(
-		'--save-dir', type = str, default = '.',
-		help = 'Where to save model files during training'
+		'--model-dir', type = str,
+		help = 'Directory containing/to save model checkpoints'
 	)
 	parser.add_argument(
 		'--opponent-sampling', type = str,
 		choices = ['latest', 'mixed'], default = 'latest',
 		help = 'Use latest or mixed checkpoints (if available)'
+	)
+	parser.add_argument(
+		'--log-file', type = str, default = 'log.txt',
+		help = 'Name of log file to dump logs to'
 	)
 
 	# Inference Options
@@ -2120,10 +2196,6 @@ def parse_arguments() -> argparse.Namespace:
 	)
 
 	# Evaluation Options
-	parser.add_argument(
-		'--model-dir', type = str,
-		help = 'Directory containing model checkpoints'
-	)
 	parser.add_argument(
 		'--k-factor', type = float, default = 32.0,
 		help = 'K-Factor for Elo calculation'
