@@ -257,12 +257,18 @@ export function generateSessionID(sessionIDs) {
 	return sessionID;
 }
 
+export function getAllSessionIDs(wss, wssClientsArchive) {
+	const live = new Set(Array.from(wss.clients).map(ws => ws.sessionID));
+	const archived = new Set(wssClientsArchive.keys());
+	return live.union(archived);
+}
+
 export function purgeArchive(archive, olderThan = 60 * 1000) {
 	let now = Date.now();
 	let purged = new Set();
-	archive.forEach((val, key) => {
-		if (now - val > olderThan) {
-			purged.add(key);
+	archive.forEach(({ws, timestamp}, key) => {
+		if (now - timestamp > olderThan) {
+			purged.add(ws);
 			archive.delete(key);
 		}
 	});

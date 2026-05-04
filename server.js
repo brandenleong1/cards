@@ -20,23 +20,22 @@ const app_port = process.env.PORT || 8080;
 const server = http.createServer(app);
 const wss = new ws.Server({server});
 
-let wssClientsArchive = new Map();	// WS Info => Disconnect Time
+let wssClientsArchive = new Map();	// SessionID => {WS Info, Disconnect Time}
 
 let messageDecoder = {
 	'checkSessionID': (ws, data) => {
-		let archive = Array.from(wssClientsArchive.keys()).map(e => Utils.JSONStringify(e));
-		let res = archive.find(ws => ws.sessionID == data.data);
+		let res = wssClientsArchive.get(data.data);
 		if (res) {
-			game.gong_zhu.users.set(res.username, ws);
-			ws.username = res.username;
-			ws.sessionID = res.sessionID;
-			let idx = game.gong_zhu.getServerIdx(res.connected);
+			game.gong_zhu.users.set(res.ws.username, ws);
+			ws.username = res.ws.username;
+			ws.sessionID = res.ws.sessionID;
+			let idx = game.gong_zhu.getServerIdx(res.ws.connected);
 			let server = null;
 			if (idx != -1) {
 				server = game.gong_zhu.servers[idx];
 				ws.connected = server;
 			}
-			wssClientsArchive.delete(Utils.JSONStringify(res));
+			wssClientsArchive.delete(data.data);
 			ws.send(Utils.JSONStringify({tag: 'receiveSessionID', status: 1, data: {
 				username: ws.username,
 				sessionID: ws.sessionID
@@ -51,7 +50,7 @@ let messageDecoder = {
 				}
 			}
 		} else {
-			let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
+			const sessionIDs = Utils.getAllSessionIDs(wss, wssClientsArchive);
 			let res = Utils.generateSessionID(sessionIDs);
 			ws.sessionID = res;
 			ws.send(Utils.JSONStringify({tag: 'receiveSessionID', status: 0, data: {
@@ -60,7 +59,7 @@ let messageDecoder = {
 		}
 	},
 	'requestSessionID': (ws, data) => {
-		let sessionIDs = new Set(Array.from(wss.clients.union(wssClientsArchive)).map(ws => ws.sessionID));
+		const sessionIDs = Utils.getAllSessionIDs(wss, wssClientsArchive);
 		let res = Utils.generateSessionID(sessionIDs);
 		ws.sessionID = res;
 		ws.send(Utils.JSONStringify({tag: 'receiveSessionID', status: 0, data: {
@@ -145,6 +144,8 @@ let messageDecoder = {
 			return;
 		}
 
+		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', timestamp: Date.now()});
+
 		game.gong_zhu.initGame(server);
 
 		let newTurnOrder = new Set(server.gameData.turnOrder);
@@ -155,7 +156,6 @@ let messageDecoder = {
 				timestamp: Date.now()
 			}));
 		}
-		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', timestamp: Date.now()});
 	},
 	'sendCommand': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -164,14 +164,6 @@ let messageDecoder = {
 		console.log(ws.username);
 
 		game.gong_zhu.enqueueCommand(data, ws, server);
-		// let resToAll = structuredClone(res);
-		// resToAll.data = res.data.filter(e => e.toAll).map(e => e.msg);
-		// resToAll.timestamp = Date.now();
-		// res.data = res.data.map(e => e.msg);
-		// res.timestamp = Date.now();
-
-		// ws.send(Utils.JSONStringify(res));
-		// Utils.broadcastToConnected(game.gong_zhu.users, server, resToAll, ws.username);
 	},
 	'sendChat': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
@@ -196,8 +188,7 @@ wss.on('listening', function() {
 	setInterval(function() {
 		let purged = Utils.purgeArchive(wssClientsArchive, 1 * 60 * 1000); // UPDATE 3 minute timeout
 
-		purged.forEach(e => {
-			let ws = Utils.JSONStringify(e);
+		purged.forEach(ws => {
 			if (ws.username) game.gong_zhu.removeUser(ws.username);
 			if (ws.connected) {
 				let [status, server] = game.gong_zhu.leaveServer(ws, ws.connected);
@@ -206,16 +197,21 @@ wss.on('listening', function() {
 						server,
 						{tag: 'showLobby', status: 1, data: server, timestamp: Date.now()}
 					);
-					else Utils.broadcastToConnected(game.gong_zhu.users, 
+					else Utils.broadcastToConnected(game.gong_zhu.users,
 						server,
 						{tag: 'otherLeftLobby', status: 1, data: server, timestamp: Date.now()}
 					);
 				}
 			}
-			for (let ws of wss.clients) {
-				ws.send(Utils.JSONStringify({tag: 'updateUserCount', data: wss.clients.size, timestamp: Date.now()}));
-			}
 		});
+
+		for (let ws of wss.clients) {
+			ws.send(Utils.JSONStringify({
+				tag: 'updateUserCount',
+				data: wss.clients.size,
+				timestamp: Date.now()
+			}));
+		}
 
 		console.table({
 			servers: game.gong_zhu.servers.length,
@@ -271,9 +267,10 @@ wss.on('connection', function(ws, req) {
 			active: 0
 		};
 
-		if (this.username && this.connected) {
-			wssClientsArchive.set(Utils.JSONStringify(oldWs), Date.now());
-		}
+		wssClientsArchive.set(this.sessionID, {
+			ws: oldWs,
+			timestamp: Date.now()
+		});
 	});
 });
 
