@@ -412,7 +412,7 @@ class MultiAgentEnv:
 		self.action_delay: float =					0.001
 
 	def _init_hyperparameters(self) -> None:
-		self.timesteps_per_batch: int =				2 ** 14
+		self.timesteps_per_batch: int =				2 ** 16
 		self.max_timesteps_per_episode: int =		200
 
 		self.reward_scale: float =					1.0 / 10
@@ -488,24 +488,28 @@ class MultiAgentEnv:
 
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (512, 256), 128),
-			'PLAY': ActorNN('PLAY', (512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (512, 256), 128)
+			'SHOW': ActorNN('SHOW', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2),
+			'PLAY': ActorNN('PLAY', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2)
 		})
 
 	def create_critic(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
-			'SHOW': CriticNN((512, 256, 128), (512, 256), 128),
-			'PLAY': CriticNN((1024, 512, 256, 128), (512, 256), 128)
+			'SHOW': CriticNN((1024, 512, 256, 128), (1028, 512, 256), 256, 2),
+			'PLAY': CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
 		})
 
-	def save_checkpoint(self) -> None:
+	def save_checkpoint(self, file_name: str | None = None) -> None:
 		checkpoint = {
 			'batch_num': self.batch_num,
 			'actor_state_dict': self.actor.state_dict(),
 			'critic_state_dict': self.critic.state_dict(),
 			'training_history': self.training_history
 		}
-		path = os.path.join(self.args.model_dir, f'gong_zhu_player_{self.batch_num}.pt')
+
+		if file_name is None:
+			file_name = f'gong_zhu_player_{self.batch_num}.pt'
+
+		path = os.path.join(self.args.model_dir, file_name)
 
 		os.makedirs(self.args.model_dir, exist_ok = True)
 
@@ -561,6 +565,7 @@ class MultiAgentEnv:
 
 	def load_opponent_models(self) -> None:
 		model_paths = self.get_models_in_directory(self.args.model_dir)
+		model_paths = [path for path in model_paths if os.path.basename(path) != 'latest_model.pt']
 
 		if len(model_paths) == 0:
 			for ws_idx in range(1, self.num_agents):
@@ -597,7 +602,7 @@ class MultiAgentEnv:
 
 		if self.mode == MultiAgentEnv.ModelModes.train:
 			async def connect_ws(ws_idx: int) -> None:
-				async with connect(url) as ws:
+				async with connect(url, ping_interval = None, ping_timeout = None) as ws:
 					self.ws_list[ws_idx] = ws
 
 					console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
@@ -1440,12 +1445,12 @@ class MultiAgentEnv:
 
 		current_trick: np.ndarray = np.array([one_hot_encode(
 			size = GAME_SETTINGS['NUM_CARDS'],
-			arr = [hand[3][0] for hand in observation['hands'] if len(hand[3])],
+			arr = hand[3],
 			dtype = np.float32
-		)])
+		) for hand in observation['hands']])
 
 		collected_cards: np.ndarray = np.array([one_hot_encode(
-			size = 52,
+			size = GAME_SETTINGS['NUM_CARDS'],
 			arr = hand[2],
 			dtype = np.float32
 		) for hand in observation['hands']])
@@ -1488,7 +1493,7 @@ class MultiAgentEnv:
 			'game_state':		torch.zeros(1, len(GameStates)),
 			'hand':				torch.zeros(1, num_cards),
 			'scores':			torch.zeros(1, num_players),
-			'current_trick':	torch.zeros(1, num_cards),
+			'current_trick':	torch.zeros(1, num_players * num_cards),
 			'collected_cards':	torch.zeros(1, num_players * num_cards),
 			'exposed':			torch.zeros(1, num_players * num_cards),
 			'play_history':		torch.zeros(1, num_tricks * num_players * num_cards),
@@ -1712,6 +1717,9 @@ class MultiAgentEnv:
 					clip_fraction = ((ratios - 1.0).abs() > self.clip_epsilon).float().mean().item()
 					clip_fractions.append(clip_fraction)
 
+				# Yield to event loop to keep websocket alive
+				await asyncio.sleep(0)
+
 		# all_rewards = np.concatenate([
 		# 	r for ws_idx in training_agents_idxs
 		# 	for r in self._batch_rewards[ws_idx]
@@ -1796,6 +1804,8 @@ class MultiAgentEnv:
 
 		if self.batch_num % self.save_checkpoint_frequency == 0:
 			self.save_checkpoint()
+
+		self.save_checkpoint(file_name = 'latest_model.pt')
 
 		await self.wait_for_lobby()
 		await self.train()
@@ -1902,16 +1912,21 @@ class MultiAgentEnv:
 	async def eval(self) -> None:
 		model_paths = self.get_models_in_directory(self.args.model_dir)
 
-		if len(model_paths) == 0:
-			print(f'No models found in directory [{os.path.abspath(self.args.model_dir)}]')
+		if len(model_paths) < self.num_agents:
+			print(f'Not enough models found in directory [{os.path.abspath(self.args.model_dir)}] ({len(model_paths)} < {self.num_agents})')
 			return
+
+		if hasattr(self.args, 'reset_elo') and self.args.reset_elo:
+			self.elo_rating_system.reset_all_ratings(model_paths)
+			self.eval_total_matches = 0
+			self.eval_total_games = 0
 
 		ws = self.ws_list[0]
 
 		# Eval Loop
 		while True:
 			# Load Matchup
-			batch_models = [np.random.choice(model_paths) for _ in range(self.num_agents)]
+			batch_models = random.sample(model_paths, self.num_agents)
 			self.load_models(batch_models)
 
 			batch_model_names = [os.path.basename(p) for p in batch_models]
@@ -1966,7 +1981,7 @@ class MultiAgentEnv:
 							change = rating_changes.get(model_path, 0)
 							print(f'  Agent {i} [{model_name}]:', file = f)
 							print(f'    Score = {self.eval_scores[i]}', file = f)
-							print(f'    ELO = {rating:.4f} ({change:.4f})', file = f)
+							print(f'    ELO = {rating:.4f} ({change:+.4f})', file = f)
 
 					self.save_all_ratings()
 
@@ -2023,6 +2038,16 @@ class EloRatingSystem:
 		self.games_played: dict[str, float] =		{}
 		self.history: list[dict] =					[]
 
+	def reset_all_ratings(self, model_paths: list[str]) -> None:
+		for model_path in model_paths:
+			model_path = os.path.abspath(model_path)
+			self.ratings[model_path] = self.initial_rating
+			self.games_played[model_path] = 0
+
+			self.save_rating(model_path)
+
+		self.history.clear()
+
 	def get_rating(self, model_path: str) -> float:
 		model_path = os.path.abspath(model_path)
 
@@ -2051,8 +2076,11 @@ class EloRatingSystem:
 		except Exception as e:
 			warnings.warn(f'Could not save rating to [{model_path}]: {e}')
 
-	def get_expected_score(self, rating_a: float, rating_b: float) -> float:
-		return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
+	def get_expected_score(self, rating_a: float, rating_b: float, scale: float = 400.0) -> float:
+		return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / scale))
+
+	def get_actual_score(self, final_score_a: float, final_score_b, scale: float = 200.0) -> float:
+		return 1.0 / (1.0 + 10.0 ** ((final_score_b - final_score_a) / scale))
 
 	def update_ratings(self, model_paths: list[str], final_scores: list[float]) -> dict[str, float]:
 		model_paths = [os.path.abspath(p) for p in model_paths]
@@ -2064,35 +2092,25 @@ class EloRatingSystem:
 		current_ratings: list[float] = [self.get_rating(path) for path in model_paths]
 		rating_changes: dict[str, list[float]] = {path: [] for path in model_paths}
 
-		expected_scores = [0 for _ in range(n)]
-		actual_scores = [0 for _ in range(n)]
-
 		for i in range(n):
-			for j in range(i + 1, n):
-				expected_i = self.get_expected_score(current_ratings[i], current_ratings[j])
-				expected_j = 1 - expected_i
+			expected_total: float = 0.0
+			actual_total: float = 0.0
 
-				expected_scores[i] += expected_i
-				expected_scores[j] += expected_j
+			for j in range(n):
+				if i == j:
+					continue
 
+				expected_ij = self.get_expected_score(current_ratings[i], current_ratings[j])
+				expected_total += expected_ij
 
-				if final_scores[i] > final_scores[j]:
-					actual_scores[i] += 1
-					actual_scores[j] += 0
-				elif final_scores[i] == final_scores[j]:
-					actual_scores[i] += 0.5
-					actual_scores[j] += 0.5
-				else:
-					actual_scores[i] += 0
-					actual_scores[j] += 1
+				actual_ij = self.get_actual_score(final_scores[i], final_scores[j])
+				actual_total += actual_ij
 
-		expected_scores = [score / (n - 1) for score in expected_scores]
-		actual_scores = [score / (n - 1) for score in actual_scores]
+			expected_normalized = expected_total / (n - 1)
+			actual_normalized = actual_total / (n - 1)
 
-		changes = [self.k_factor * (actual - expected) for expected, actual in zip(expected_scores, actual_scores)]
-
-		for i in range(n):
-			rating_changes[model_paths[i]].append(changes[i])
+			change = self.k_factor * (actual_normalized - expected_normalized)
+			rating_changes[model_paths[i]].append(change)
 
 		final_changes = {}
 		for model_path in set(model_paths):
@@ -2199,6 +2217,10 @@ def parse_arguments() -> argparse.Namespace:
 	parser.add_argument(
 		'--k-factor', type = float, default = 32.0,
 		help = 'K-Factor for Elo calculation'
+	)
+	parser.add_argument(
+		'--reset-elo', action = 'store_true',
+		help = 'Reset Elo ratings for all models before starting evaluation'
 	)
 
 	args = parser.parse_args()
