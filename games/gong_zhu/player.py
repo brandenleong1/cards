@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import enum
+import functools
 import glob
 import itertools as it
 import json
@@ -27,11 +28,6 @@ from tqdm import tqdm
 from typing import Any
 
 
-torch.manual_seed(0)
-np.random.seed(0)
-random.seed(0)
-
-
 GAME_SETTINGS = {
 	'NUM_PLAYERS':	4,
 	'NUM_CARDS':	52 * 1
@@ -48,9 +44,10 @@ class GameStates(enum.Enum):
 	LEADERBOARD =	7
 
 
-def updateEnvironmentSettings(msg: dict) -> None:
+def update_environment_settings(msg: dict) -> None:
 	GAME_SETTINGS['NUM_CARDS'] =	52 * msg['data']['gameData']['numDecks']
-	GAME_SETTINGS['turn_order'] =	msg['data']['gameData']['turnOrder']
+	if len(msg['data']['gameData']['turnOrder']):
+		GAME_SETTINGS['NUM_PLAYERS'] =	len(msg['data']['gameData']['turnOrder'])
 
 def one_hot_encode(size: int, arr: np.ndarray[int], axis: int = 0, **kwargs) -> np.ndarray:
 	def one_hot_slice(arr: np.ndarray[int]):
@@ -76,9 +73,9 @@ def json_parser(obj: dict) -> Any:
 
 class ConsoleListeners:
 	def __init__(self) -> None:
-		self.listeners = []
-		self.idx_to_name = {}
-		self.name_to_idx = {}
+		self.listeners: list[websockets.asyncio.client.ClientConnection] = []
+		self.key_to_name: dict[int | tuple[int, int], str] = {}
+		self.name_to_key: dict[str, int | tuple[int, int]] = {}
 
 	def add_ws(self, ws: websockets.asyncio.client.ClientConnection) -> None:
 		self.listeners.append(ws)
@@ -90,13 +87,13 @@ class ConsoleListeners:
 		for ws in self.listeners:
 			asyncio.create_task(ws.send(message))
 
-	def create_console(self, ws_idx: int, ws_name: str) -> None:
-		if ws_idx in self.idx_to_name.keys():
-			raise ValueError(f'ws_idx [{ws_idx}] already exists')
-		if ws_name in self.name_to_idx.keys():
+	def create_console(self, ws_key: int | tuple[int, int], ws_name: str) -> None:
+		if ws_key in self.key_to_name.keys():
+			raise ValueError(f'ws_key [{ws_key}] already exists')
+		if ws_name in self.name_to_key.keys():
 			raise ValueError(f'ws_name [{ws_name}] already exists')
-		self.idx_to_name[ws_idx] = ws_name
-		self.name_to_idx[ws_name] = ws_idx
+		self.key_to_name[ws_key] = ws_name
+		self.name_to_key[ws_name] = ws_key
 		self.broadcast_message(json.dumps({
 			'tag': 'createConsole',
 			'data': {'id': ws_name},
@@ -374,7 +371,11 @@ class MultiAgentEnv:
 
 	def __init__(self,
 		args: argparse.Namespace | None = None,
-		mode: MultiAgentEnv.ModelModes | None = None
+		mode: MultiAgentEnv.ModelModes | None = None,
+		worker_id: int = 0,
+		actor: torch.nn.ModuleDict | None = None,
+		critic: torch.nn.ModuleDict | None = None,
+		console_listeners: ConsoleListeners | None = None
 	) -> None:
 
 		self._init_hyperparameters()
@@ -383,26 +384,35 @@ class MultiAgentEnv:
 			mode = MultiAgentEnv.ModelModes.train
 
 		self.args = args if args is not None else argparse.Namespace()
+		self.worker_id = worker_id
+		self.console_listeners = console_listeners
 
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
-		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None			for _ in range(self.num_agents)]
+		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None				for _ in range(self.num_agents)]
 
 		self.mode: MultiAgentEnv.ModelModes =										mode
 		self.is_waiting_for_spectator: bool =										False
 		self.batch_num: int =														0
 		self.save_checkpoint_frequency: int =										20
 
-		self._is_processing_event: list[bool] =										[False			for _ in range(self.num_agents)]
-		self._event_queue: list[list[tuple[str, float]]] =							[list()			for _ in range(self.num_agents)] # (message, timestamp)
+		self._is_processing_event: list[bool] =										[False				for _ in range(self.num_agents)]
+		self._event_queue: list[list[tuple[str, float]]] =							[list()				for _ in range(self.num_agents)] # (message, timestamp)
 
+		self.handshake_events: list[asyncio.Event] =								[asyncio.Event()	for _ in range(self.num_agents)]
+		self.lobby_ready_event: asyncio.Event =										asyncio.Event()
+		self.rollout_complete_event: asyncio.Event =								asyncio.Event()
 		self.eval_game_complete_event: asyncio.Event =								asyncio.Event()
+		self.listen_tasks: list[asyncio.Task] =										[]
 
 		self.training_history: dict[str, list[int | float]] = {}
 
 		self.reset()
 
-		self.actor = self.create_actor()
-		self.critic = self.create_critic()
+		self.actor = actor if actor is not None else self.create_actor()
+		self.critic = critic if critic is not None else self.create_critic()
+
+		self._owns_actor = actor is None
+		self._owns_critic = critic is None
 
 		self.elo_rating_system = EloRatingSystem(k_factor = self.args.k_factor)
 		self.eval_games_per_match: int =			20
@@ -436,6 +446,8 @@ class MultiAgentEnv:
 		self.is_rollout: bool =											False
 		self.is_training: bool =										False
 		self.is_evaluating: bool =										False
+
+		self._turn_order: list[str | None] =							[None					for _ in range(self.num_agents)]
 
 		self._latest_observation: list[dict | None] =					[None					for _ in range(self.num_agents)]
 		self._latest_state: list[dict[str, np.ndarray] | None] =		[None					for _ in range(self.num_agents)]
@@ -598,20 +610,25 @@ class MultiAgentEnv:
 					self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
 
 	async def connect(self, url: str) -> None:
-		global console_listeners
-
 		if self.mode == MultiAgentEnv.ModelModes.train:
-			async def connect_ws(ws_idx: int) -> None:
-				async with connect(url, ping_interval = None, ping_timeout = None) as ws:
-					self.ws_list[ws_idx] = ws
+			await self.connect_and_handshake(url)
 
-					console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+			if hasattr(self.args, 'spectate') and self.args.spectate:
+				self.is_waiting_for_spectator = True
+				loop = asyncio.get_running_loop()
+				await loop.run_in_executor(None, lambda: input('Join as spectator now, [Enter] to continue...'))
+				self.is_waiting_for_spectator = False
 
-					await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
-					await self._listen(ws_idx)
-
-			tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
-			await asyncio.gather(*tasks)
+			try:
+				while True:
+					trajectories = await self.rollout_one_batch()
+					await self.train_post_rollout(trajectories = trajectories)
+					self.batch_num += 1
+					if self.batch_num % self.save_checkpoint_frequency == 0:
+						self.save_checkpoint()
+					self.save_checkpoint(file_name = 'latest_model.pt')
+			finally:
+				await self.disconnect()
 
 		elif self.mode == MultiAgentEnv.ModelModes.infer:
 			self.actor.eval()
@@ -621,7 +638,8 @@ class MultiAgentEnv:
 			async with connect(url) as ws:
 				self.ws_list[ws_idx] = ws
 
-				console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+				if self.console_listeners is not None:
+					self.console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
 
 				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
 				await self._listen(ws_idx)
@@ -631,7 +649,8 @@ class MultiAgentEnv:
 				async with connect(url) as ws:
 					self.ws_list[ws_idx] = ws
 
-					console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
+					if self.console_listeners is not None:
+						self.console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
 
 					await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
 					await self._listen(ws_idx)
@@ -658,6 +677,115 @@ class MultiAgentEnv:
 			eval_task = asyncio.create_task(launch_eval())
 			await asyncio.gather(*tasks, eval_task)
 
+	async def connect_and_handshake(self, url: str) -> None:
+		for event in self.handshake_events:
+			event.clear()
+
+		async def connect_ws(ws_idx: int) -> None:
+			async with connect(url, ping_interval = None, ping_timeout = None) as ws:
+				self.ws_list[ws_idx] = ws
+
+				if self.console_listeners is not None:
+					console_name = f'agent_w{self.worker_id}_a{ws_idx}'
+					console_key = (self.worker_id, ws_idx)
+					self.console_listeners.create_console(console_key, console_name)
+
+				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
+				await self._listen(ws_idx)
+
+		self.listen_tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
+		await asyncio.gather(*[event.wait() for event in self.handshake_events])
+
+	async def disconnect(self) -> None:
+		for task in self.listen_tasks:
+			task.cancel()
+		if len(self.listen_tasks):
+			await asyncio.gather(*self.listen_tasks, return_exceptions = True)
+
+		self.listen_tasks = []
+
+	async def rollout_one_batch(self) -> dict[str, list]:
+		self.reset()
+		self.load_opponent_models()
+
+		num_agents_training = sum(1 for actor in self._opponent_actors if actor is None)
+		self._batch_size = self.timesteps_per_batch // num_agents_training
+
+		self._batch_ts = [0 for _ in range(self.num_agents)]
+		self._episode_ts = [0 for _ in range(self.num_agents)]
+		self.is_rollout = True
+		self.rollout_complete_event.clear()
+		self.lobby_ready_event.clear()
+
+		self._rollout_progressbar = tqdm(
+			range(self.timesteps_per_batch),
+			dynamic_ncols = True,
+			desc = f'[w{self.worker_id}] Batch {self.batch_num} Rollout'
+		)
+		self._rollout_progressbar.n = 0
+		self._rollout_progressbar.refresh()
+
+		if hasattr(self.ws_list[0], '_settings_sent'):
+			delattr(self.ws_list[0], '_settings_sent')
+
+		self.actor.train()
+		self.critic.train()
+
+		await self.ws_list[0].send(json.dumps({
+			'tag': 'createLobby',
+			'data': {
+				'name':		f'training_w{self.worker_id}',
+				'time':		int(time.time() * 1000),
+				'creator':	self.ws_list[0].username,
+				'host':		self.ws_list[0].username
+			},
+			'timestamp': int(time.time() * 1000)
+		}))
+
+		await self.rollout_complete_event.wait()
+
+		self.is_rollout = False
+		if self._rollout_progressbar is not None:
+			self._rollout_progressbar.close()
+
+		await self.exit_lobby()
+
+		return self.get_trajectories()
+
+	async def exit_lobby(self) -> None:
+		for ws_idx in range(self.num_agents):
+			ws = self.ws_list[ws_idx]
+			if ws is None:
+				continue
+			latest_observation = self._latest_observation[ws_idx]
+			current_frame = latest_observation['currentFrame'] if latest_observation is not None else -1
+			try:
+				await ws.send(json.dumps({
+					'tag': 'sendCommand',
+					'data': 'EXIT',
+					'timestamp': int(time.time() * 1000),
+					'currentFrame': {'$bigint': str(current_frame)}
+				}))
+			except Exception as e:
+				warnings.warn(f'[w{self.worker_id}] Failed to send EXIT for ws_idx [{ws_idx}]: {e}')
+
+	def get_trajectories(self) -> dict[str, list]:
+		training_idxs = [i for i in range(self.num_agents) if self._opponent_actors[i] is None]
+
+		return {
+			'states':		[self._batch_states[i]			for i in training_idxs],
+			'actions':		[self._batch_actions[i]			for i in training_idxs],
+			'action_masks':	[self._batch_action_masks[i]	for i in training_idxs],
+			'log_probs':	[self._batch_log_probs[i]		for i in training_idxs],
+			'rewards':		[self._batch_rewards[i]			for i in training_idxs],
+			'lens':			[self._batch_lens[i]			for i in training_idxs],
+		}
+
+	def update_environment_from_message(self, message: dict) -> None:
+		update_environment_settings(message)
+		if len(message['data']['gameData']['turnOrder']):
+			self._turn_order = message['data']['gameData']['turnOrder']
+
 	async def unlock_processing_event(self, ws_idx: int) -> None:
 		if len(self._event_queue[ws_idx]):
 			message, timestep = self._event_queue[ws_idx].pop(0)
@@ -666,6 +794,13 @@ class MultiAgentEnv:
 
 		else:
 			self._is_processing_event[ws_idx] = False
+
+	def _broadcast_console(self, ws_idx: int, message: dict) -> None:
+		if self.console_listeners is None:
+			return
+		console_key = (self.worker_id, ws_idx) if self.mode == MultiAgentEnv.ModelModes.train else ws_idx
+		message['data']['id'] = self.console_listeners.key_to_name.get(console_key, f'agent_{ws_idx}')
+		self.console_listeners.broadcast_message(json.dumps(message))
 
 	async def _listen(self, ws_idx: int) -> None:
 		ws = self.ws_list[ws_idx]
@@ -682,7 +817,6 @@ class MultiAgentEnv:
 			await self._handle_message(ws_idx, message)
 
 	async def _handle_message(self, ws_idx: int, message: str) -> None:
-		global console_listeners
 		ws = self.ws_list[ws_idx]
 
 		self._is_processing_event[ws_idx] = True
@@ -702,17 +836,7 @@ class MultiAgentEnv:
 			ws.username = msg['data']
 
 			if self.mode == MultiAgentEnv.ModelModes.train:
-				if ws_idx == 0:
-					await ws.send(json.dumps({
-						'tag': 'createLobby',
-						'data': {
-							'name': 'training',
-							'time': int(time.time() * 1000),
-							'creator': ws.username,
-							'host': ws.username
-						},
-						'timestamp': int(time.time() * 1000)
-					}))
+				self.handshake_events[ws_idx].set()
 
 			elif self.mode == MultiAgentEnv.ModelModes.infer:
 				if ws_idx == 0:
@@ -735,7 +859,16 @@ class MultiAgentEnv:
 					}))
 
 		elif msg['tag'] == 'createdLobby':
-			if self.mode in (MultiAgentEnv.ModelModes.train, MultiAgentEnv.ModelModes.eval):
+			if self.mode == MultiAgentEnv.ModelModes.train:
+				for other_ws_idx in range(self.num_agents):
+					other_ws = self.ws_list[other_ws_idx]
+					await other_ws.send(json.dumps({
+						'tag': 'joinLobby',
+						'data': msg['data'],
+						'timestamp': int(time.time() * 1000)
+					}))
+
+			elif self.mode == MultiAgentEnv.ModelModes.eval:
 				await ws.send(json.dumps({
 					'tag': 'joinLobby',
 					'data': msg['data'],
@@ -746,10 +879,8 @@ class MultiAgentEnv:
 			self.reset_game_state(ws_idx)
 
 			if self.mode == MultiAgentEnv.ModelModes.train:
-				if not hasattr(ws, 'connected'):
-					ws.connected = True
-
-					if ws_idx == 0:
+				if ws_idx == 0:
+					if not self.lobby_ready_event.is_set() and not hasattr(ws, '_settings_sent'):
 						settings = copy.deepcopy(msg['data']['gameData']['settings'])
 						settings['spectatorPolicy'] = 'constant'
 						settings['expose3'] = True
@@ -759,63 +890,30 @@ class MultiAgentEnv:
 							'data': {'settings': settings},
 							'timestamp': int(time.time() * 1000)
 						}))
+						ws._settings_sent = True
 
-						updateEnvironmentSettings(msg)
+						self.update_environment_from_message(msg)
 
 						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
 						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
 						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
 
-						for ws_i in self.ws_list[1:]:
-							await ws_i.send(json.dumps({
-								'tag': 'getLobbies',
-								'timestamp': int(time.time() * 1000)
-							}))
+					connected_count = len(msg['data'].get('connected', []))
+					if connected_count == GAME_SETTINGS['NUM_PLAYERS'] and self.is_rollout and not self.lobby_ready_event.is_set():
+						self.lobby_ready_event.set()
 
-						await self.unlock_processing_event(ws_idx)
+						self.update_environment_from_message(msg)
 
-						while not all(hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected for i in range(self.num_agents)):
-							await asyncio.sleep(self.action_delay)
-
-						if hasattr(self.args, 'spectate') and self.args.spectate:
-							self.is_waiting_for_spectator = True
-
-							loop = asyncio.get_running_loop()
-							await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
-
-							self.is_waiting_for_spectator = False
-
-						await self.train()
-
-				else:
-					if ws_idx == 0:
-						if len(msg['data']['connected']) == GAME_SETTINGS['NUM_PLAYERS']:
-							if self.is_rollout:
-								await ws.send(json.dumps({
-									'tag': 'startGame',
-									'timestamp': int(time.time() * 1000)
-								}))
-
-							elif self.is_training:
-								pass
-
-							elif self.is_waiting_for_spectator:
-								pass
-
-							else:
-								self.is_waiting_for_spectator = True
-
-								loop = asyncio.get_running_loop()
-								await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
-
-								self.is_waiting_for_spectator = False
-								await self.train()
+						await ws.send(json.dumps({
+							'tag': 'startGame',
+							'timestamp': int(time.time() * 1000)
+						}))
 
 			elif self.mode == MultiAgentEnv.ModelModes.infer:
 				if not hasattr(ws, 'connected'):
 					ws.connected = True
 
-					updateEnvironmentSettings(msg)
+					self.update_environment_from_message(msg)
 
 			elif self.mode == MultiAgentEnv.ModelModes.eval:
 				if not hasattr(ws, 'connected'):
@@ -832,7 +930,7 @@ class MultiAgentEnv:
 							'timestamp': int(time.time() * 1000)
 						}))
 
-						updateEnvironmentSettings(msg)
+						self.update_environment_from_message(msg)
 
 						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
 						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
@@ -845,7 +943,7 @@ class MultiAgentEnv:
 							}))
 
 		elif msg['tag'] == 'updateLobbies':
-			if self.mode in (MultiAgentEnv.ModelModes.train, MultiAgentEnv.ModelModes.eval):
+			if self.mode == MultiAgentEnv.ModelModes.eval:
 				if not hasattr(ws, 'connected'):
 					servers = msg['data']
 					for server in servers:
@@ -892,9 +990,9 @@ class MultiAgentEnv:
 					await self.unlock_processing_event(ws_idx)
 					return
 
-				updateEnvironmentSettings(msg)
+				self.update_environment_from_message(msg)
 
-				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+				turn_idx = self._turn_order.index(ws.username)
 				current_frame = msg['data']['gameData']['currentFrame']
 
 				# Update Internals From Message
@@ -916,14 +1014,13 @@ class MultiAgentEnv:
 
 					self._episode_rewards[ws_idx][-1] += reward
 
-					console_listeners.broadcast_message(json.dumps({
+					self._broadcast_console(ws_idx, {
 						'tag': 'receiveCommand',
 						'data': {
-							'id': console_listeners.idx_to_name[ws_idx],
 							'msg': ['=== reward ===\n' + f'Transition Reward [{reward}]\nCumulative Reward [{self._episode_rewards[ws_idx][-1]}]'],
 							'status': 1
 						}
-					}))
+					})
 
 				# Episode Completion + Reset
 				game_state = self._latest_observation[ws_idx]['gameState']
@@ -939,7 +1036,8 @@ class MultiAgentEnv:
 						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
 
 						total_timesteps = sum(self._batch_ts)
-						target_timesteps = self.timesteps_per_batch * self.num_agents
+						num_training = sum(1 for a in self._opponent_actors if a is None)
+						target_timesteps = self.timesteps_per_batch * num_training
 
 						total_episodes = sum(len(rewards) for rewards in self._batch_rewards)
 						ongoing_episodes = sum(1 for ts in self._episode_ts if ts > 0)
@@ -979,41 +1077,37 @@ class MultiAgentEnv:
 					await self.unlock_processing_event(ws_idx)
 					return
 
-				console_listeners.broadcast_message(json.dumps({
+				self._broadcast_console(ws_idx, {
 					'tag': 'receiveCommand',
 					'data': {
-						'id': console_listeners.idx_to_name[ws_idx],
 						'msg': [f'=== self._latest_observation[ws_idx] ===\n' + json.dumps(self._latest_observation[ws_idx])],
 						'status': 0
 					}
-				}))
-				console_listeners.broadcast_message(json.dumps({
+				})
+				self._broadcast_console(ws_idx, {
 					'tag': 'receiveCommand',
 					'data': {
-						'id': console_listeners.idx_to_name[ws_idx],
 						'msg': [f'gameState: {self._latest_observation[ws_idx]["gameState"]} | needToAct: {self._latest_observation[ws_idx]["needToAct"][turn_idx]}'],
 						'status': 1
 					}
-				}))
+				})
 
 				# Needs to Act -> Make Action
 				if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
-					console_listeners.broadcast_message(json.dumps({
+					self._broadcast_console(ws_idx, {
 						'tag': 'receiveCommand',
 						'data': {
-							'id': console_listeners.idx_to_name[ws_idx],
 							'msg': [f'NEED TO ACT -- batch {self._batch_ts[ws_idx]}/{self.timesteps_per_batch} | episode {self._episode_ts[ws_idx]}/{self.max_timesteps_per_episode}'],
 							'status': 0
 						}
-					}))
-					console_listeners.broadcast_message(json.dumps({
+					})
+					self._broadcast_console(ws_idx, {
 						'tag': 'receiveCommand',
 						'data': {
-							'id': console_listeners.idx_to_name[ws_idx],
 							'msg': [f'=== self._latest_state[ws_idx] ===\n' + json.dumps({k: v.tolist() if type(v) == np.ndarray else v for k, v in self._latest_state[ws_idx].items()})],
 							'status': 1
 						}
-					}))
+					})
 
 					if self._batch_ts[ws_idx] >= 0 and (self._opponent_actors[ws_idx] is not None or self._batch_ts[ws_idx] < self._batch_size):
 
@@ -1043,19 +1137,9 @@ class MultiAgentEnv:
 						# Batch Full
 						if self._opponent_actors[ws_idx] is None and self._batch_ts[ws_idx] + 1 >= self._batch_size:
 							self.is_rollout = False
-							self.is_training = True
 							for _ws_idx in range(self.num_agents):
 								self.end_episode(_ws_idx)
-
-							await ws.send(json.dumps({
-								'tag': 'sendCommand',
-								'data': 'EXIT',
-								'timestamp': int(time.time() * 1000),
-								'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-							}))
-
-							self._rollout_progressbar.close()
-							asyncio.create_task(self.train_post_rollout())
+							self.rollout_complete_event.set()
 
 							await self.unlock_processing_event(ws_idx)
 							return
@@ -1069,14 +1153,13 @@ class MultiAgentEnv:
 
 							actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type, self._opponent_actors[ws_idx])
 
-							console_listeners.broadcast_message(json.dumps({
+							self._broadcast_console(ws_idx, {
 								'tag': 'receiveCommand',
 								'data': {
-									'id': console_listeners.idx_to_name[ws_idx],
 									'msg': [f'=== actions | log_probs ({self._latest_observation[ws_idx]["gameState"]}) ===\n' + json.dumps(actions.tolist()) + '\n' + json.dumps(log_probs.tolist())],
 									'status': 1
 								}
-							}))
+							})
 
 							self._batch_states[ws_idx].append({k: v.squeeze(0) for k, v in inputs.items()})
 							self._batch_actions[ws_idx].append(actions.squeeze(0))
@@ -1091,14 +1174,14 @@ class MultiAgentEnv:
 						await self.act(actions[0], ws_idx, turn_idx)
 
 			elif self.mode == MultiAgentEnv.ModelModes.infer:
-				updateEnvironmentSettings(msg)
+				self.update_environment_from_message(msg)
 
 				# Spectator or Not In Game
-				if ws.username not in GAME_SETTINGS['turn_order']:
+				if ws.username not in self._turn_order:
 					await self.unlock_processing_event(ws_idx)
 					return
 
-				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+				turn_idx = self._turn_order.index(ws.username)
 				current_frame = msg['data']['gameData']['currentFrame']
 
 				# Update Internals From Message
@@ -1144,13 +1227,13 @@ class MultiAgentEnv:
 					await self.unlock_processing_event(ws_idx)
 					return
 
-				updateEnvironmentSettings(msg)
+				self.update_environment_from_message(msg)
 
-				if ws.username not in GAME_SETTINGS['turn_order']:
+				if ws.username not in self._turn_order:
 					await self.unlock_processing_event(ws_idx)
 					return
 
-				turn_idx = GAME_SETTINGS['turn_order'].index(ws.username)
+				turn_idx = self._turn_order.index(ws.username)
 				current_frame = msg['data']['gameData']['currentFrame']
 
 				# Update Internals From Message
@@ -1210,25 +1293,23 @@ class MultiAgentEnv:
 						await self.act(actions[0], ws_idx, turn_idx)
 
 		elif msg['tag'] == 'receiveCommand':
-			console_listeners.broadcast_message(json.dumps({
+			self._broadcast_console(ws_idx, {
 				'tag': 'receiveCommand',
 				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
 					'msg': [f'=== receiveCommand ===\n{msg["data"]}'],
 					'status': 1
 				}
-			}))
+			})
 			self.update_latest_from_console_observation(msg['data'], ws_idx)
 
 		elif msg['tag'] == 'commandNACK':
-			console_listeners.broadcast_message(json.dumps({
+			self._broadcast_console(ws_idx, {
 				'tag': 'receiveCommand',
 				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
 					'msg': [f'=== commandNACK ===\n{msg["data"]}'],
 					'status': 0
 				}
-			}))
+			})
 			try:
 				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
 				self._latest_actions[ws_idx].pop(found_idx)
@@ -1250,6 +1331,11 @@ class MultiAgentEnv:
 			except StopIteration:
 				pass
 
+			await ws.send(json.dumps({
+				'tag': 'getGameState',
+				'timestamp': int(time.time() * 1000)
+			}))
+
 		elif msg['tag'] == 'commandACK':
 			try:
 				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
@@ -1259,14 +1345,14 @@ class MultiAgentEnv:
 			except StopIteration:
 				pass
 
-			console_listeners.broadcast_message(json.dumps({
+			self._broadcast_console(ws_idx, {
 				'tag': 'receiveCommand',
 				'data': {
-					'id': console_listeners.idx_to_name[ws_idx],
+					'id': '',
 					'msg': [f'=== commandACK ===\n{msg["data"]}', json.dumps(self._latest_actions[ws_idx])],
 					'status': 1
 				}
-			}))
+			})
 
 		await self.unlock_processing_event(ws_idx)
 
@@ -1355,31 +1441,12 @@ class MultiAgentEnv:
 		return actions, log_probs, inputs, mask
 
 	async def act(self, action: torch.Tensor, ws_idx: int, turn_idx: int) -> None:
-		# if self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
-		# 	cards_to_play = torch.nonzero(action, as_tuple=True)[0]
-		# 	hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-		# 	selected_cards = hand[cards_to_play].tolist()
-		# 	hand_in_obs = self._latest_observation[ws_idx]['hands'][turn_idx][0]
-
-		# 	log_path = None
-		# 	if self.args.model_dir is not None:
-		# 		os.makedirs(self.args.model_dir, exist_ok = True)
-		# 		log_path = os.path.join(self.args.model_dir, self.args.log_file)
-
-		# 	if log_path is not None:
-		# 		with open(log_path, 'a') as f:
-		# 			print(f'Hand (state):  {hand.tolist()}', file = f)
-		# 			print(f'Hand (obs):    {hand_in_obs}', file = f)
-		# 			print(f'Action idx:    {cards_to_play.tolist()}', file = f)
-		# 			print(f'Selected card: {selected_cards}', file = f)
-		# 			print(f'Mask was:      {self._latest_state[ws_idx]}', file = f)  # check action mask
+		if self._latest_observation[ws_idx] is None:
+			return
 
 		commands = []
 		if self._latest_observation[ws_idx]['gameState'].startswith('SHOW'):
 			if torch.sum(action).item() != 0:
-				# cards_to_play = torch.nonzero(action, as_tuple = True)[0]
-				# hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-				# cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
 				cards_to_play = torch.nonzero(action, as_tuple = True)[0].tolist()
 				cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], cards_to_play))[0].tolist()
 
@@ -1387,9 +1454,6 @@ class MultiAgentEnv:
 				commands.append('PLAY ' + args)
 			commands.append('PASS')
 		elif self._latest_observation[ws_idx]['gameState'].startswith('PLAY'):
-			# cards_to_play = torch.nonzero(action, as_tuple = True)[0]
-			# hand = np.where(self._latest_state[ws_idx]['hand'] == 1)[0]
-			# cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], hand[cards_to_play].tolist()))[0].tolist()
 			cards_to_play = torch.nonzero(action, as_tuple = True)[0].tolist()
 			cards_to_play_idxs = np.where(np.isin(self._latest_observation[ws_idx]['hands'][turn_idx][0], cards_to_play))[0].tolist()
 
@@ -1402,14 +1466,13 @@ class MultiAgentEnv:
 				command_str += '\n'
 			command_str += f'=> [{command}]'
 
-		console_listeners.broadcast_message(json.dumps({
+		self._broadcast_console(ws_idx, {
 			'tag': 'receiveCommand',
 			'data': {
-				'id': console_listeners.idx_to_name[ws_idx],
 				'msg': [f' === PLAYING WITH OBSERVATION: ===\n' + json.dumps(self._latest_observation[ws_idx]), command_str],
 				'status': 1
 			}
-		}))
+		})
 
 		ws = self.ws_list[ws_idx]
 		for command in commands:
@@ -1521,11 +1584,6 @@ class MultiAgentEnv:
 
 		return state, play_history, leader_history
 
-		# state = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['state']], dim = -1)
-		# history = torch.concatenate([states[k].flatten(start_dim = 1) for k in MultiAgentEnv.serialize_state_order['history']], dim = -1)
-
-		# return state, history
-
 	async def wait_for_lobby(self, timeout: float = 10.0) -> bool:
 		start_time = time.time()
 
@@ -1548,38 +1606,12 @@ class MultiAgentEnv:
 		self._episode_ts[ws_idx] = -1
 		self._episode_rewards[ws_idx].clear()
 
-	async def train(self) -> None:
-		is_in_game = False
-		if self._latest_observation[0] is not None:
-			print(f'{self._latest_observation[0] = }')
-			is_in_game = self._latest_observation[0].get('gameState', '') != ''
-
-		self.reset()
-		self.load_opponent_models()
-
-		num_agents_training =			sum(1 for actor in self._opponent_actors if actor is None)
-		self._batch_size =				self.timesteps_per_batch // num_agents_training
-
-		self._batch_ts =				[0 for _ in range(self.num_agents)]
-		self._episode_ts =				[0 for _ in range(self.num_agents)]
-		self.is_rollout =				True
-		self._rollout_progressbar =		tqdm(range(self.timesteps_per_batch), dynamic_ncols = True, desc = f'Batch {self.batch_num} Rollout')
-		self._rollout_progressbar.n =	0
-		self._rollout_progressbar.refresh()
-		self.actor.train()
-		self.critic.train()
-
-		if is_in_game:
-			await self.ws_list[0].send(json.dumps({'tag': 'sendCommand', 'data': 'EXIT', 'timestamp': int(time.time() * 1000), 'currentFrame': {'$bigint': str(self._latest_observation[0]['currentFrame']) if self._latest_observation[0] is not None else -1}}))
-		else:
-			await self.ws_list[0].send(json.dumps({'tag': 'startGame', 'timestamp': int(time.time() * 1000)}))
-
-	async def train_post_rollout(self) -> None:
+	async def train_post_rollout(self, trajectories: dict | None = None) -> None:
 		training_agents_idxs = [ws_idx for ws_idx in range(self.num_agents) if self._opponent_actors[ws_idx] is None]
 
 		eps = 1e-9
 
-		batch_advantages, batch_returns =	self.compute_gaes()																		# (B,), (B,)
+		batch_advantages, batch_returns =	self.compute_gaes()		# (B,), (B,)
 		batch_returns = (batch_returns - batch_returns.mean()) / (batch_returns.std() + eps)
 
 		batch_state_dicts =		[
@@ -1799,16 +1831,6 @@ class MultiAgentEnv:
 		# 			print(f'  State {i}: game_state={trick_num}, '
 		# 				f'predicted={predicted[i]:.3f}, '
 		# 				f'actual={sample_returns[i]:.3f}', file = f)
-
-		self.batch_num += 1
-
-		if self.batch_num % self.save_checkpoint_frequency == 0:
-			self.save_checkpoint()
-
-		self.save_checkpoint(file_name = 'latest_model.pt')
-
-		await self.wait_for_lobby()
-		await self.train()
 
 	def compute_gaes(self) -> tuple[torch.Tensor, torch.Tensor]:
 		training_agents_idxs = [ws_idx for ws_idx in range(self.num_agents) if self._opponent_actors[ws_idx] is None]
@@ -2130,16 +2152,19 @@ class EloRatingSystem:
 
 		return sorted(leaderboard, key = lambda x: x[1], reverse = True)
 
-async def console_server_handler(ws) -> None:
-	global console_listeners
-	global env
+async def console_server_handler(ws, console_listeners: ConsoleListener, env: MultiAgentEnv) -> None:
 	try:
 		console_listeners.add_ws(ws)
 		async for message in ws:
 			msg = json.loads(message)
 			# print(msg)
 			if msg['tag'] == 'sendCommand':
-				ws_idx = console_listeners.name_to_idx[msg['id']]
+				ws_key = console_listeners.name_to_key[msg['id']]
+				if isinstance(ws_key, tuple):
+					worker_id, ws_idx = ws_key
+				else:
+					ws_idx = ws_key
+
 				try:
 					data = json.loads(msg['data'])
 					assert type(data) == dict
@@ -2243,13 +2268,32 @@ def parse_arguments() -> argparse.Namespace:
 
 	return args
 
+def crash_on_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+	print('=' * 80, flush = True, file = sys.stderr)
+	print(f'FATAL: Unhandled exception in asyncio loop', flush = True, file = sys.stderr)
+	print(f'Context: {context}', flush = True, file = sys.stderr)
+	if 'exception' in context.keys():
+		traceback.print_exception(
+			type(context['exception']),
+			context['exception'],
+			context['exception'].__traceback__,
+			file = sys.stderr
+		)
+	print('=' * 80, flush = True, file = sys.stderr)
+	os._exit(1)
+
 async def main() -> None:
 	args: argparse.Namespace = parse_arguments()
 
-	global console_listeners
-	global env
+	loop = asyncio.get_running_loop()
+	loop.set_exception_handler(crash_on_exception)
 
 	console_listeners = ConsoleListeners()
+
+	env = MultiAgentEnv(
+		args = args,
+		console_listeners = console_listeners
+	)
 
 	if args.console_server_url is not None:
 		console_server_url = urllib.parse.urlparse(args.console_server_url)
@@ -2261,11 +2305,10 @@ async def main() -> None:
 		if console_server_port is None:
 			console_server_port = '8080'
 
-		console_server = await serve(handler = console_server_handler, host = console_server_host, port = console_server_port)
+		handler = functools.partial(console_server_handler, console_listeners = console_listeners, env = env)
+		console_server = await serve(handler = handler, host = console_server_host, port = console_server_port)
 
 		input('Console server started, [Enter] to continue...')
-
-	env = MultiAgentEnv(args)
 
 	if args.model is not None:
 		if os.path.exists(args.model):
