@@ -151,8 +151,6 @@ export function removeAllSpectators(server) {
 	toRemove.splice(hostIdx, 1);
 	toRemove.splice(0, server.gameData.maxPlayers - 1);
 
-	console.log(toRemove);
-
 	toRemove.forEach(user => removeSpectator(user, server));
 
 	server.connected.forEach(user => users.get(user.username).send(Utils.JSONStringify({tag: 'showLobby', status: 1, data: server, timestamp: Date.now()})));
@@ -321,7 +319,6 @@ function gameNSL(server) {
 		server.gameData.gameState = 'PLAY_3';
 	} else if (server.gameData.gameState == 'PLAY_3') {
 		if (server.gameData.hands.every(e => !e[0].length)) {
-			// console.log(server.gameData.scores.map(e => (e[0] + e[1])));
 			if (server.gameData.scores.some(e => (e[0] + e[1]) <= server.gameData.settings.losingThreshold)) {
 				server.gameData.gameState = 'LEADERBOARD';
 			} else {
@@ -424,7 +421,6 @@ function gameOFL(server) {
 export function enqueueCommand(data, ws, server) {
 	server.commandQueue.push([data, ws]);
 	processNextCommand(server);
-	console.log('enqueueCommand: ', data);
 }
 
 export function processNextCommand(server) {
@@ -435,13 +431,10 @@ export function processNextCommand(server) {
 	while (server.commandQueue.length) {
 		let [data, ws] = server.commandQueue.shift();
 
-		console.log(data.currentFrame, server.gameData.currentFrame, data.currentFrame == server.gameData.currentFrame);
 		if (data.currentFrame != server.gameData.currentFrame) {
 			ws.send(Utils.JSONStringify({tag: 'commandNACK', data: {command: data.data, oldFrame: data.currentFrame, newFrame: server.gameData.currentFrame}, timestamp: Date.now()}));
 			continue;
 		}
-
-		console.log(server.gameData.currentFrame, data.currentFrame, server.commandQueue.map(e => [e[0], e[1].username]));
 
 		let res = processCommand(data.data, ws, server);
 		let resToAll = structuredClone(res);
@@ -463,7 +456,6 @@ export function processCommand(data, ws, server) {
 
 	let command = CommandParse.parseCommand(data);
 	let commandUpper = command.command[0].toUpperCase();
-	console.log(command);
 	let ret = [];
 	let status = 1;
 
@@ -563,8 +555,6 @@ export function processCommand(data, ws, server) {
 							if (!previousTurnOrder.has(username)) users.get(username).send(Utils.JSONStringify({tag: 'broadcastedMessage', data: 'You are now playing!', timestamp: Date.now()}));
 						}
 					}
-
-					console.log('deal', server);
 
 					ret.push(...gameNSL(server));
 					ret.push({

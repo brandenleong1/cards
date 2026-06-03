@@ -357,6 +357,125 @@ class CriticNN(torch.nn.Module):
 
 		return self.network(inputs).squeeze(-1)
 
+class MultiWorkerMultiAgentEnv:
+	def __init__(
+		self,
+		args: argparse.Namespace,
+		console_listeners: ConsoleListeners | None = None
+	) -> None:
+
+		self.args = args
+		self.console_listeners = console_listeners
+
+		self.actor = self.create_actor()
+		self.critic = self.create_critic()
+
+		self.workers: list[MultiAgentEnv] = []
+
+	def create_actor(self) -> torch.nn.ModuleDict:
+		return torch.nn.ModuleDict({
+			'SHOW': ActorNN('SHOW', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2),
+			'PLAY': ActorNN('PLAY', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2)
+		})
+
+	def create_critic(self) -> torch.nn.ModuleDict:
+		return torch.nn.ModuleDict({
+			'SHOW': CriticNN((1024, 512, 256, 128), (1028, 512, 256), 256, 2),
+			'PLAY': CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
+		})
+
+	def has_real_checkpoint(self) -> bool:
+		if self.args.model_dir is None or not os.path.isdir(self.args.model_dir):
+			return False
+		paths = glob.glob(os.path.join(self.args.model_dir, '*.pt'))
+		paths = [p for p in paths if os.path.basename(p) != 'latest_model.pt']
+		return len(paths) > 0
+
+	def create_worker(self, worker_id: int, attach_console: bool = False) -> MultiAgentEnv:
+		console_listeners = self.console_listeners if attach_console else None
+		worker = MultiAgentEnv(
+			args = self.args,
+			mode = MultiAgentEnv.ModelModes.train,
+			worker_id = worker_id,
+			actor = self.actor,
+			critic = self.critic,
+			console_listeners = console_listeners,
+		)
+
+		if self.args.n_workers > 1:
+			worker.timesteps_per_batch = worker.timesteps_per_batch // self.args.n_workers
+
+		return worker
+
+	def load_checkpoint(self, path: str) -> None:
+		checkpoint = torch.load(path, weights_only = False)
+
+		self.actor.load_state_dict(checkpoint['actor_state_dict'])
+		self.critic.load_state_dict(checkpoint['critic_state_dict'])
+		self._initial_batch_num = checkpoint['batch_num']
+		self._initial_training_history = checkpoint.get('training_history', {})
+		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self._initial_batch_num})')
+
+	async def train(self, url: str) -> None:
+		# Self Play
+		if self.args.n_workers == 1 or not self.has_real_checkpoint():
+			worker = self.create_worker(0, (self.console_listeners is not None))
+			self.workers = [worker]
+
+			if hasattr(self, '_initial_batch_num'):
+				worker.batch_num = self._initial_batch_num
+			if hasattr(self, '_initial_training_history'):
+				worker.training_history = self._initial_training_history
+
+			worker.timesteps_per_batch *= self.args.n_workers
+
+			try:
+				await worker.connect_and_handshake(url)
+
+				while self.args.n_workers == 1 or not self.has_real_checkpoint():
+					trajectories = await worker.rollout_one_batch()
+					await worker.train_post_rollout(trajectories)
+
+			finally:
+				await worker.disconnect()
+
+			self._initial_batch_num = worker.batch_num
+			self._initial_training_history = worker.training_history
+
+		# Parallel Training
+		if self.args.n_workers != 1:
+			self.workers = [self.create_worker(i, False) for i in range(self.args.n_workers)]
+
+			for worker in self.workers:
+				if hasattr(self, '_initial_batch_num'):
+					worker.batch_num = self._initial_batch_num
+				if hasattr(self, '_initial_training_history'):
+					worker.training_history = self._initial_training_history
+
+			try:
+				await asyncio.gather(*[worker.connect_and_handshake(url) for worker in self.workers])
+
+				while True:
+					trajectories = await asyncio.gather(*[worker.rollout_one_batch() for worker in self.workers])
+					merged_trajectories = self.merge_trajectories(trajectories)
+
+					await self.workers[0].train_post_rollout(merged_trajectories)
+
+					batch_num = self.workers[0].batch_num
+					training_history = self.workers[0].training_history
+					for worker in self.workers:
+						worker.batch_num = batch_num
+						worker.training_history = training_history
+
+			finally:
+				await asyncio.gather(*[worker.disconnect() for worker in self.workers], return_exceptions = True)
+
+	def merge_trajectories(self, trajectories: list[dict]) -> dict[str, list]:
+		merged_trajectories = {}
+		for worker_trajectories in trajectories:
+			for key in worker_trajectories.keys():
+				merged_trajectories.setdefault(key, []).extend(worker_trajectories[key])
+		return merged_trajectories
 
 class MultiAgentEnv:
 	serialize_state_order = {
@@ -385,6 +504,7 @@ class MultiAgentEnv:
 
 		self.args = args if args is not None else argparse.Namespace()
 		self.worker_id = worker_id
+		self.worker_id_width = max(1, len(str(self.args.n_workers - 1)))
 		self.console_listeners = console_listeners
 
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
@@ -596,39 +716,44 @@ class MultiAgentEnv:
 			elif self.args.opponent_sampling == 'mixed':
 				weights = self.get_opponent_sampling_weights(model_paths)
 
+			log_lines = []
+			for ws_idx in range(1, self.num_agents):
+				path = np.random.choice(model_paths, p = weights)
+				log_lines.append(f'[w{self.worker_id:0{self.worker_id_width}d}] Selected model [{path}] as opponent')
+				self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
+
 			if log_path is not None:
 				with open(log_path, 'a') as f:
-					for ws_idx in range(1, self.num_agents):
-						path = np.random.choice(model_paths, p = weights)
-						print(f'Selected model [{path}] as opponent', file = f)
-						self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
+					f.write(''.join(log_lines))
 
 			else:
-				for ws_idx in range(1, self.num_agents):
-					path = np.random.choice(model_paths, p = weights)
-					print(f'Selected model [{path}] as opponent')
-					self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
+				for line in log_lines:
+					print(line)
 
 	async def connect(self, url: str) -> None:
 		if self.mode == MultiAgentEnv.ModelModes.train:
-			await self.connect_and_handshake(url)
+			raise RuntimeError(
+				'MutliAgentEnv.connect() should not be called in train mode; use MultiWorkerMultiAgentEnv instead'
+			)
 
-			if hasattr(self.args, 'spectate') and self.args.spectate:
-				self.is_waiting_for_spectator = True
-				loop = asyncio.get_running_loop()
-				await loop.run_in_executor(None, lambda: input('Join as spectator now, [Enter] to continue...'))
-				self.is_waiting_for_spectator = False
+			# await self.connect_and_handshake(url)
 
-			try:
-				while True:
-					trajectories = await self.rollout_one_batch()
-					await self.train_post_rollout(trajectories = trajectories)
-					self.batch_num += 1
-					if self.batch_num % self.save_checkpoint_frequency == 0:
-						self.save_checkpoint()
-					self.save_checkpoint(file_name = 'latest_model.pt')
-			finally:
-				await self.disconnect()
+			# if hasattr(self.args, 'spectate') and self.args.spectate:
+			# 	self.is_waiting_for_spectator = True
+			# 	loop = asyncio.get_running_loop()
+			# 	await loop.run_in_executor(None, lambda: input('Join as spectator now, [Enter] to continue...'))
+			# 	self.is_waiting_for_spectator = False
+
+			# try:
+			# 	while True:
+			# 		trajectories = await self.rollout_one_batch()
+			# 		await self.train_post_rollout(trajectories = trajectories)
+			# 		self.batch_num += 1
+			# 		if self.batch_num % self.save_checkpoint_frequency == 0:
+			# 			self.save_checkpoint()
+			# 		self.save_checkpoint(file_name = 'latest_model.pt')
+			# finally:
+			# 	await self.disconnect()
 
 		elif self.mode == MultiAgentEnv.ModelModes.infer:
 			self.actor.eval()
@@ -686,7 +811,7 @@ class MultiAgentEnv:
 				self.ws_list[ws_idx] = ws
 
 				if self.console_listeners is not None:
-					console_name = f'agent_w{self.worker_id}_a{ws_idx}'
+					console_name = f'agent_w{self.worker_id:0{self.worker_id_width}d}_a{ws_idx}'
 					console_key = (self.worker_id, ws_idx)
 					self.console_listeners.create_console(console_key, console_name)
 
@@ -718,9 +843,10 @@ class MultiAgentEnv:
 		self.lobby_ready_event.clear()
 
 		self._rollout_progressbar = tqdm(
-			range(self.timesteps_per_batch),
+			range(self._batch_size * num_agents_training),
 			dynamic_ncols = True,
-			desc = f'[w{self.worker_id}] Batch {self.batch_num} Rollout'
+			desc = f'[w{self.worker_id:0{self.worker_id_width}d}] Batch {self.batch_num} Rollout',
+			position = self.worker_id
 		)
 		self._rollout_progressbar.n = 0
 		self._rollout_progressbar.refresh()
@@ -767,7 +893,7 @@ class MultiAgentEnv:
 					'currentFrame': {'$bigint': str(current_frame)}
 				}))
 			except Exception as e:
-				warnings.warn(f'[w{self.worker_id}] Failed to send EXIT for ws_idx [{ws_idx}]: {e}')
+				warnings.warn(f'[w{self.worker_id:0{self.worker_id_width}d}] Failed to send EXIT for ws_idx [{ws_idx}]: {e}')
 
 	def get_trajectories(self) -> dict[str, list]:
 		training_idxs = [i for i in range(self.num_agents) if self._opponent_actors[i] is None]
@@ -1606,32 +1732,33 @@ class MultiAgentEnv:
 		self._episode_ts[ws_idx] = -1
 		self._episode_rewards[ws_idx].clear()
 
-	async def train_post_rollout(self, trajectories: dict | None = None) -> None:
-		training_agents_idxs = [ws_idx for ws_idx in range(self.num_agents) if self._opponent_actors[ws_idx] is None]
-
+	async def train_post_rollout(self, trajectories: dict) -> None:
 		eps = 1e-9
 
-		batch_advantages, batch_returns =	self.compute_gaes()		# (B,), (B,)
+		batch_advantages, batch_returns =	self.compute_gaes(trajectories)		# (B,), (B,)
 		batch_returns = (batch_returns - batch_returns.mean()) / (batch_returns.std() + eps)
 
 		batch_state_dicts =		[
-									state for ws_idx in training_agents_idxs
-									for state in self._batch_states[ws_idx]
+									state for stream in trajectories['states']
+									for state in stream
 								]
+		if len(batch_state_dicts) == 0:
+			return
+
 		batch_states =			{k: torch.stack(
 									([s[k].flatten() for s in batch_state_dicts]), dim = 0
 								) for k in batch_state_dicts[0].keys()}
 		batch_actions =			torch.stack([
-									action for ws_idx in training_agents_idxs
-									for action in self._batch_actions[ws_idx]
+									action for stream in trajectories['actions']
+									for action in stream
 								], dim = 0)		# (B, dim(act))
 		batch_action_masks =	torch.stack([
-									action_mask for ws_idx in training_agents_idxs
-									for action_mask in self._batch_action_masks[ws_idx]
+									action_mask for stream in trajectories['action_masks']
+									for action_mask in stream
 								], dim = 0)		# (B, dim(act))
 		batch_log_probs =		torch.stack([
-									log_prob for ws_idx in training_agents_idxs
-									for log_prob in self._batch_log_probs[ws_idx]
+									log_prob for stream in trajectories['log_probs']
+									for log_prob in stream
 								], dim = 0)		# (B)
 
 		game_states = batch_states['game_state']
@@ -1666,7 +1793,11 @@ class MultiAgentEnv:
 		entropy_values = []
 		clip_fractions = []
 
-		for epoch in tqdm(range(self.n_updates_per_batch), desc = 'Training: ', dynamic_ncols = True):
+		for epoch in tqdm(
+				range(self.n_updates_per_batch),
+				desc = f'Training ({len(batch_state_dicts)} samples): ',
+				dynamic_ncols = True
+		):
 			indices = torch.randperm(batch_len)
 
 			for start in range(0, batch_len, mini_batch_len):
@@ -1752,23 +1883,7 @@ class MultiAgentEnv:
 				# Yield to event loop to keep websocket alive
 				await asyncio.sleep(0)
 
-		# all_rewards = np.concatenate([
-		# 	r for ws_idx in training_agents_idxs
-		# 	for r in self._batch_rewards[ws_idx]
-		# ])
-		# nonzero_frac = (all_rewards != 0).mean()
-
-		# log_path = None
-		# if self.args.model_dir is not None:
-		# 	os.makedirs(self.args.model_dir, exist_ok = True)
-		# 	log_path = os.path.join(self.args.model_dir, self.args.log_file)
-
-		# if log_path is not None:
-		# 	with open(log_path, 'a') as f:
-		# 		print(f'Non-zero reward fraction: {nonzero_frac:.3f}', file = f)
-		# 		print(f'Reward stats: mean={all_rewards.mean():.4f}, std={all_rewards.std():.4f}', file = f)
-
-		all_episode_rewards = [rewards.sum() for ws_idx in training_agents_idxs for rewards in self._batch_rewards[ws_idx]]
+		all_episode_rewards = [rewards.sum() for stream in trajectories['rewards'] for rewards in stream]
 
 		with torch.no_grad():
 			predicted_values = torch.zeros(len(batch_state_dicts))
@@ -1813,6 +1928,12 @@ class MultiAgentEnv:
 			print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}', file = f)
 			print(f'', file = f)
 
+		self.batch_num += 1
+
+		if self.batch_num % self.save_checkpoint_frequency == 0:
+			self.save_checkpoint()
+		self.save_checkpoint('latest_model.pt')
+
 		# with torch.no_grad():
 		# 	sample_idx = torch.randperm(batch_len)[:20]
 		# 	sample_states = MultiAgentEnv.get_masked_states(batch_states, sample_idx)
@@ -1832,19 +1953,25 @@ class MultiAgentEnv:
 		# 				f'predicted={predicted[i]:.3f}, '
 		# 				f'actual={sample_returns[i]:.3f}', file = f)
 
-	def compute_gaes(self) -> tuple[torch.Tensor, torch.Tensor]:
-		training_agents_idxs = [ws_idx for ws_idx in range(self.num_agents) if self._opponent_actors[ws_idx] is None]
-
+	def compute_gaes(self, trajectories: dict[str, list]) -> tuple[torch.Tensor, torch.Tensor]:
 		all_advantages = []
 		all_returns = []
 
-		for ws_idx in training_agents_idxs:
+		n_streams = len(trajectories['states'])
+
+		for stream_idx in range(n_streams):
+			stream_states = trajectories['states'][stream_idx]
+			stream_rewards = trajectories['rewards'][stream_idx]
+
+			if len(stream_states) == 0:
+				continue
+
 			batch_advantages = []
 			batch_returns = []
 
 			stacked_states = {
-				k: torch.stack([s[k].flatten() for s in self._batch_states[ws_idx]], dim = 0)
-				for k in self._batch_states[ws_idx][0].keys()
+				k: torch.stack([s[k].flatten() for s in stream_states], dim = 0)
+				for k in stream_states[0].keys()
 			}
 
 			game_states = stacked_states['game_state']
@@ -1862,7 +1989,7 @@ class MultiAgentEnv:
 				batch_values = batch_values.numpy()
 
 			value_idx = 0
-			for episode_idx, episode_rewards in enumerate(self._batch_rewards[ws_idx]):
+			for episode_rewards in stream_rewards:
 				episode_len = episode_rewards.shape[0]
 				if episode_len == 0:
 					continue
@@ -1890,6 +2017,9 @@ class MultiAgentEnv:
 
 			all_advantages.append(np.concatenate(batch_advantages))
 			all_returns.append(np.concatenate(batch_returns))
+
+		if len(all_advantages) == 0:
+			return torch.zeros(0), torch.zeros(0)
 
 		return torch.tensor(np.concatenate(all_advantages, axis = 0)), torch.tensor(np.concatenate(all_returns, axis = 0))
 
@@ -2152,7 +2282,7 @@ class EloRatingSystem:
 
 		return sorted(leaderboard, key = lambda x: x[1], reverse = True)
 
-async def console_server_handler(ws, console_listeners: ConsoleListener, env: MultiAgentEnv) -> None:
+async def console_server_handler(ws, console_listeners: ConsoleListener, env: MultiAgentEnv | MultiWorkerMultiAgentEnv) -> None:
 	try:
 		console_listeners.add_ws(ws)
 		async for message in ws:
@@ -2169,11 +2299,17 @@ async def console_server_handler(ws, console_listeners: ConsoleListener, env: Mu
 					data = json.loads(msg['data'])
 					assert type(data) == dict
 					data['timestamp'] = int(time.time() * 1000)
-					await env.ws_list[ws_idx].send(json.dumps(data))
+					if isinstance(env, MultiAgentEnv):
+						await env.ws_list[ws_idx].send(json.dumps(data))
+					elif isinstance(env, MultiWorkerMultiAgentEnv) and len(env.workers) > 0:
+						await env.workers[0].ws_list[ws_idx].send(json.dumps(data))
 				except:
 					print(f'Invalid JSON string {msg["data"]}')
 			if msg['tag'] == 'reset':
-				env.reset()
+				if isinstance(env, MultiAgentEnv):
+					env.reset()
+				elif isinstance(env, MultiWorkerMultiAgentEnv) and len(env.workers) > 0:
+					env.workers[0].reset()
 
 		await ws.wait_closed()
 	finally:
@@ -2202,6 +2338,10 @@ def parse_arguments() -> argparse.Namespace:
 	)
 
 	# Training Options
+	parser.add_argument(
+		'--n-workers', '-n', type = int, default = 1,
+		help = 'Number of parallel rollout workers'
+	)
 	parser.add_argument(
 		'--console-server-url', type = str,
 		help = 'Console server URL to connect to'
@@ -2250,6 +2390,14 @@ def parse_arguments() -> argparse.Namespace:
 
 	args = parser.parse_args()
 
+	if args.train:
+		if args.n_workers < 1:
+			parser.error(f'--n-workers must be >= 1 (got {args.n_workers})')
+		if args.n_workers > 1 and args.console_server_url is not None:
+			parser.error('--console-server-url is only supported with --n-workers=1')
+		if args.n_workers > 1 and args.spectate:
+			parser.error('--spectate is only supported with --n-workers=1')
+
 	if args.infer:
 		if args.model is None:
 			parser.error('--infer requires --model to be specified')
@@ -2288,53 +2436,67 @@ async def main() -> None:
 	loop = asyncio.get_running_loop()
 	loop.set_exception_handler(crash_on_exception)
 
-	console_listeners = ConsoleListeners()
-
-	env = MultiAgentEnv(
-		args = args,
-		console_listeners = console_listeners
-	)
-
-	if args.console_server_url is not None:
-		console_server_url = urllib.parse.urlparse(args.console_server_url)
-		console_server_host = console_server_url.hostname
-		console_server_port = console_server_url.port
-
-		if console_server_host is None:
-			console_server_host = 'localhost'
-		if console_server_port is None:
-			console_server_port = '8080'
-
-		handler = functools.partial(console_server_handler, console_listeners = console_listeners, env = env)
-		console_server = await serve(handler = handler, host = console_server_host, port = console_server_port)
-
-		input('Console server started, [Enter] to continue...')
-
-	if args.model is not None:
-		if os.path.exists(args.model):
-			env.load_checkpoint(args.model)
-		else:
-			warnings.warn(f'Checkpoint not found at {os.path.abspath(args.model)}')
-
-			if args.infer:
-				warnings.warn('No checkpoint loaded; bot will use random initialization')
+	console_listeners = ConsoleListeners() if args.console_server_url is not None else None
 
 	if args.train:
-		env.set_mode(MultiAgentEnv.ModelModes.train)
+		env = MultiWorkerMultiAgentEnv(args, console_listeners)
+
+		if args.model is not None:
+			if os.path.exists(args.model):
+				env.load_checkpoint(args.model)
+			else:
+				warnings.warn(f'Checkpoint not found at {os.path.abspath(args.model)}')
+
+		if args.console_server_url is not None:
+			console_server_url = urllib.parse.urlparse(args.console_server_url)
+			console_server_host = console_server_url.hostname or 'localhost'
+			console_server_port = console_server_url.port or 8080
+
+			handler = functools.partial(console_server_handler, console_listeners = console_listeners, env = env)
+			console_server = await serve(handler = handler, host = console_server_host, port = console_server_port)
+
+			input('Console server started, [Enter] to continue...')
+
 		print('Starting training mode...')
+		await env.train(args.url)
 
-	elif args.infer:
-		env.set_mode(MultiAgentEnv.ModelModes.infer)
-		print('Starting inference mode...')
+	elif args.infer or args.eval:
+		env = MultiAgentEnv(
+			args = args,
+			console_listeners = console_listeners
+		)
 
-	elif args.eval:
-		env.set_mode(MultiAgentEnv.ModelModes.eval)
-		print('Starting evaluation mode...')
+		if args.model is not None:
+			if os.path.exists(args.model):
+				env.load_checkpoint(args.model)
+			else:
+				warnings.warn(f'Checkpoint not found at {os.path.abspath(args.model)}')
+
+				if args.infer:
+					warnings.warn('No checkpoint loaded; bot will use random initialization')
+
+		if args.console_server_url is not None:
+			console_server_url = urllib.parse.urlparse(args.console_server_url)
+			console_server_host = console_server_url.hostname or 'localhost'
+			console_server_port = console_server_url.port or 8080
+
+			handler = functools.partial(console_server_handler, console_listeners = console_listeners, env = env)
+			console_server = await serve(handler = handler, host = console_server_host, port = console_server_port)
+
+			input('Console server started, [Enter] to continue...')
+
+		if args.infer:
+			env.set_mode(MultiAgentEnv.ModelModes.infer)
+			print('Starting inference mode...')
+
+		elif args.eval:
+			env.set_mode(MultiAgentEnv.ModelModes.eval)
+			print('Starting evaluation mode...')
+
+		await env.connect(args.url)
 
 	else:
 		raise ValueError('No mode specified')
-
-	await env.connect(args.url)
 
 if __name__ == '__main__':
 	asyncio.run(main())

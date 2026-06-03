@@ -161,7 +161,6 @@ let messageDecoder = {
 		let idx = game.gong_zhu.getServerIdx(ws.connected);
 		if (idx == -1) return;
 		let server = game.gong_zhu.servers[idx];
-		console.log(ws.username);
 
 		game.gong_zhu.enqueueCommand(data, ws, server);
 	},
@@ -241,7 +240,7 @@ wss.on('connection', function(ws, req) {
 	ws.on('message', function(data, isBinary) {
 		data = isBinary ? data : data.toString();
 		data = Utils.JSONParse(data);
-		console.log(ws.username, data);
+		// console.log(ws.username, data);
 
 		let tags = data.tag.split('/');
 		let func;
