@@ -50,6 +50,12 @@ def update_environment_settings(msg: dict) -> None:
 		GAME_SETTINGS['NUM_PLAYERS'] =	len(msg['data']['gameData']['turnOrder'])
 
 def one_hot_encode(size: int, arr: np.ndarray[int], axis: int = 0, **kwargs) -> np.ndarray:
+	if arr.ndim <= 1:
+		out = np.zeros((size,), **kwargs)
+		if arr.size:
+			out[arr.astype(np.intp, copy = False)] = 1
+		return out
+
 	def one_hot_slice(arr: np.ndarray[int]):
 		out = np.zeros((size,), **kwargs)
 		if len(arr):
@@ -724,7 +730,7 @@ class MultiAgentEnv:
 
 			if log_path is not None:
 				with open(log_path, 'a') as f:
-					f.write(''.join(log_lines))
+					f.writelines(line + '\n' for line in log_lines)
 
 			else:
 				for line in log_lines:
@@ -1634,13 +1640,13 @@ class MultiAgentEnv:
 
 		current_trick: np.ndarray = np.array([one_hot_encode(
 			size = GAME_SETTINGS['NUM_CARDS'],
-			arr = hand[3],
+			arr = np.array(hand[3]),
 			dtype = np.float32
 		) for hand in observation['hands']])
 
 		collected_cards: np.ndarray = np.array([one_hot_encode(
 			size = GAME_SETTINGS['NUM_CARDS'],
-			arr = hand[2],
+			arr = np.array(hand[2]),
 			dtype = np.float32
 		) for hand in observation['hands']])
 
