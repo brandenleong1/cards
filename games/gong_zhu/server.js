@@ -118,6 +118,29 @@ export function leaveServer(ws, server) {
 	}
 }
 
+export function purgeStaleServers() {
+	for (let idx = servers.length - 1; idx >= 0; idx--) {
+		let server = servers[idx];
+
+		server.connected = server.connected.filter(member => {
+			let ws = users.get(member.username);
+			return ws !== undefined && ws.connected === server;
+		});
+
+		if (!server.connected.length) {
+			servers.splice(idx, 1);
+			removed.push(server);
+			continue;
+		}
+
+		if (!server.connected.some(member => member.username == server.host)) {
+			let hostIdx = Math.floor(Math.random() * server.connected.length);
+			server.host = server.connected[hostIdx].username;
+		}
+		Utils.updatePriorities(server);
+	}
+}
+
 export function updateServerSettings(server, settings) {
 	let idx = getServerIdx(server);
 	if (idx == -1) return [0, 'Server does not exist'];

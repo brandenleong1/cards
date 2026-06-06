@@ -292,7 +292,7 @@ export function updatePriorities(server) {
 	}
 	connected.sort(function(a, b) {
 		return (a.username).localeCompare(b.username);
-	})
+	});
 
 	server.connected = connected;
 }
@@ -303,5 +303,5 @@ export function getLowestPriority(server) {
 			return Math.max(accumulator, currentValue);
 		},
 		-Infinity
-	)
+	);
 }

@@ -204,6 +204,8 @@ wss.on('listening', function() {
 			}
 		});
 
+		game.gong_zhu.purgeStaleServers();
+
 		for (let ws of wss.clients) {
 			ws.send(Utils.JSONStringify({
 				tag: 'updateUserCount',

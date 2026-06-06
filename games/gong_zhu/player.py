@@ -11,8 +11,10 @@ import math
 import os
 import random
 import re
+import sys
 import tempfile
 import time
+import traceback
 import urllib.parse
 import warnings
 
@@ -26,6 +28,16 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from typing import Any
+
+
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 
 GAME_SETTINGS = {
@@ -828,6 +840,8 @@ class MultiAgentEnv:
 		await asyncio.gather(*[event.wait() for event in self.handshake_events])
 
 	async def disconnect(self) -> None:
+		await self.exit_lobby()
+
 		for task in self.listen_tasks:
 			task.cancel()
 		if len(self.listen_tasks):
@@ -889,17 +903,13 @@ class MultiAgentEnv:
 			ws = self.ws_list[ws_idx]
 			if ws is None:
 				continue
-			latest_observation = self._latest_observation[ws_idx]
-			current_frame = latest_observation['currentFrame'] if latest_observation is not None else -1
 			try:
 				await ws.send(json.dumps({
-					'tag': 'sendCommand',
-					'data': 'EXIT',
-					'timestamp': int(time.time() * 1000),
-					'currentFrame': {'$bigint': str(current_frame)}
+					'tag': 'leaveLobby',
+					'timestamp': int(time.time() * 1000)
 				}))
 			except Exception as e:
-				warnings.warn(f'[w{self.worker_id:0{self.worker_id_width}d}] Failed to send EXIT for ws_idx [{ws_idx}]: {e}')
+				warnings.warn(f'[w{self.worker_id:0{self.worker_id_width}d}] Failed to leave lobby for ws_idx [{ws_idx}]: {e}')
 
 	def get_trajectories(self) -> dict[str, list]:
 		training_idxs = [i for i in range(self.num_agents) if self._opponent_actors[i] is None]
@@ -1136,7 +1146,9 @@ class MultiAgentEnv:
 				found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
 
 				# Nothing Happened -> Return
-				if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+				prev_frame = prev_observation['currentFrame'] if prev_observation is not None else None
+				new_frame = self._latest_observation[ws_idx]['currentFrame']
+				if prev_frame is not None and prev_frame == new_frame:
 					await self.unlock_processing_event(ws_idx)
 					return
 
@@ -1324,7 +1336,9 @@ class MultiAgentEnv:
 				found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
 
 				# Nothing Happened -> Return
-				if json.dumps(prev_observation, sort_keys = True, separators = (',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys = True, separators = (',', ':')):
+				prev_frame = prev_observation['currentFrame'] if prev_observation is not None else None
+				new_frame = self._latest_observation[ws_idx]['currentFrame']
+				if prev_frame is not None and prev_frame == new_frame:
 					await self.unlock_processing_event(ws_idx)
 					return
 
@@ -1376,7 +1390,9 @@ class MultiAgentEnv:
 				found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
 
 				# Nothing Happened -> Return
-				if json.dumps(prev_observation, sort_keys=True, separators=(',', ':')) == json.dumps(self._latest_observation[ws_idx], sort_keys=True, separators=(',', ':')):
+				prev_frame = prev_observation['currentFrame'] if prev_observation is not None else None
+				new_frame = self._latest_observation[ws_idx]['currentFrame']
+				if prev_frame is not None and prev_frame == new_frame:
 					await self.unlock_processing_event(ws_idx)
 					return
 
