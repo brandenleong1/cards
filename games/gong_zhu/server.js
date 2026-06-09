@@ -31,29 +31,25 @@ export const defaultSettings = {
 
 
 export function addUser(username) {
-	if (usernames[username]) {
-		if (usernames[username] == 1000) return [0, 'Username saturated'];
-		else {
-			while (true) {
-				let t = Math.floor(Math.random() * 10000).toString(10).padStart(4, '0');
-				let user = username + '#' + t;
-				if (!users.has(user)) {
-					usernames[username]++;
-					return [1, user];
-				}
-			}
-		}
-	} else {
+	let count = usernames.get(username) || 0;
+	if (count >= 1000) return [0, 'Username saturated'];
+
+	while (true) {
 		let t = Math.floor(Math.random() * 10000).toString(10).padStart(4, '0');
 		let user = username + '#' + t;
-		usernames.set(username, 1);
-		return [1, user];
+		if (!users.has(user)) {
+			usernames.set(username, count + 1);
+			return [1, user];
+		}
 	}
 }
 
 export function removeUser(username) {
 	if (!username) return;
-	usernames[username.split('#', 1)[0]] -= 1;
+	let base = username.split('#', 1)[0];
+	let count = usernames.get(base) || 0;
+	if (count <= 1) usernames.delete(base);
+	else usernames.set(base, count - 1);
 	users.delete(username);
 }
 
@@ -129,7 +125,6 @@ export function purgeStaleServers() {
 
 		if (!server.connected.length) {
 			servers.splice(idx, 1);
-			removed.push(server);
 			continue;
 		}
 

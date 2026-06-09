@@ -30,16 +30,6 @@ from tqdm import tqdm
 from typing import Any
 
 
-os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
-os.environ['NUMEXPR_NUM_THREADS'] = '1'
-os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
-
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
-
-
 GAME_SETTINGS = {
 	'NUM_PLAYERS':	4,
 	'NUM_CARDS':	52 * 1
@@ -476,7 +466,6 @@ class MultiWorkerMultiAgentEnv:
 				while True:
 					trajectories = await asyncio.gather(*[worker.rollout_one_batch() for worker in self.workers])
 					merged_trajectories = self.merge_trajectories(trajectories)
-
 					await self.workers[0].train_post_rollout(merged_trajectories)
 
 					batch_num = self.workers[0].batch_num
@@ -549,10 +538,10 @@ class MultiAgentEnv:
 		self.actor = actor if actor is not None else self.create_actor()
 		self.critic = critic if critic is not None else self.create_critic()
 
-		self._owns_actor = actor is None
-		self._owns_critic = critic is None
+		self.actor_optimizer: torch.optim.Optimizer | None =	None
+		self.critic_optimizer: torch.optim.Optimizer | None =	None
 
-		self.elo_rating_system = EloRatingSystem(k_factor = self.args.k_factor)
+		self.elo_rating_system: EloRatingSystem =	EloRatingSystem(k_factor = self.args.k_factor)
 		self.eval_games_per_match: int =			20
 		self.eval_total_matches: int =				0
 		self.eval_total_games: int =				0
@@ -877,16 +866,7 @@ class MultiAgentEnv:
 		self.actor.train()
 		self.critic.train()
 
-		await self.ws_list[0].send(json.dumps({
-			'tag': 'createLobby',
-			'data': {
-				'name':		f'training_w{self.worker_id}',
-				'time':		int(time.time() * 1000),
-				'creator':	self.ws_list[0].username,
-				'host':		self.ws_list[0].username
-			},
-			'timestamp': int(time.time() * 1000)
-		}))
+		await self.create_lobby()
 
 		await self.rollout_complete_event.wait()
 
@@ -897,6 +877,18 @@ class MultiAgentEnv:
 		await self.exit_lobby()
 
 		return self.get_trajectories()
+
+	async def create_lobby(self) -> None:
+		await self.ws_list[0].send(json.dumps({
+			'tag': 'createLobby',
+			'data': {
+				'name':		f'training_w{self.worker_id}',
+				'time':		int(time.time() * 1000),
+				'creator':	self.ws_list[0].username,
+				'host':		self.ws_list[0].username
+			},
+			'timestamp': int(time.time() * 1000)
+		}))
 
 	async def exit_lobby(self) -> None:
 		for ws_idx in range(self.num_agents):
@@ -1002,6 +994,11 @@ class MultiAgentEnv:
 
 		elif msg['tag'] == 'createdLobby':
 			if self.mode == MultiAgentEnv.ModelModes.train:
+				if not msg.get('status', 1):
+					await asyncio.sleep(self.action_delay)
+					await self.create_lobby()
+					return
+
 				for other_ws_idx in range(self.num_agents):
 					other_ws = self.ws_list[other_ws_idx]
 					await other_ws.send(json.dumps({
@@ -1801,8 +1798,10 @@ class MultiAgentEnv:
 				masked_states = MultiAgentEnv.get_masked_states(batch_states, play_mask)
 				batch_values_old[play_mask] = self.critic['PLAY'](masked_states)
 
-		actor_optimizer =	torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr)
-		critic_optimizer =	torch.optim.Adam(self.critic.parameters(),	lr = self.critic_lr)
+		if self.actor_optimizer is None:
+			self.actor_optimizer =		torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr,		fused = True)
+		if self.critic_optimizer is None:
+			self.critic_optimizer =		torch.optim.Adam(self.critic.parameters(),	lr = self.critic_lr,	fused = True)
 
 		batch_len =			len(batch_state_dicts)
 		mini_batch_len =	self.mini_batch_size
@@ -1881,15 +1880,15 @@ class MultiAgentEnv:
 				if mini_batch_play_mask.any():
 					play_critic_losses.append(critic_loss_per_sample[mini_batch_play_mask].mean().item())
 
-				actor_optimizer.zero_grad()
+				self.actor_optimizer.zero_grad()
 				actor_loss.backward()
 				torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-				actor_optimizer.step()
+				self.actor_optimizer.step()
 
-				critic_optimizer.zero_grad()
+				self.critic_optimizer.zero_grad()
 				critic_loss.backward()
 				torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-				critic_optimizer.step()
+				self.critic_optimizer.step()
 
 				actor_losses.append(actor_loss.item())
 				critic_losses.append(critic_loss.item())
