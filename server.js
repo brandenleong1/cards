@@ -80,6 +80,10 @@ let messageDecoder = {
 	'createLobby': (ws, data) => {
 		let res = game.gong_zhu.addServer(data.data);
 		ws.send(Utils.JSONStringify({tag: 'createdLobby', status: res[0], data: res[1], timestamp: Date.now()}));
+		if (res[0]) {
+			game.gong_zhu.joinServer(ws, res[1]);
+			ws.send(Utils.JSONStringify({tag: 'showLobby', status: res[0], data: res[1], timestamp: Date.now()}));
+		}
 	},
 	'joinLobby': (ws, data) => {
 		let idx = game.gong_zhu.getServerIdx(data.data);

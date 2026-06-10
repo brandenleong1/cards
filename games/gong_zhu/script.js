@@ -11,7 +11,7 @@ let messageDecoder = {
 	'receiveUsername':		(data) => {receiveUsername(data);},
 	'updateUserCount':		(data) => {updateUserCount(data);},
 	'updateLobbies':		(data) => {updateLobbies(data);},
-	'createdLobby':			(data) => {joinLobby(data);},
+	'createdLobby':			(data) => {createdLobby(data);},
 	'showLobby':			(data) => {showLobby(data);},
 	'leftLobby':			(data) => {leftLobby(data);},
 	'otherLeftLobby':		(data) => {otherLeftLobby(data);},
@@ -332,12 +332,11 @@ function createLobby() {
 	ws.send(Utils.JSONStringify({tag: 'createLobby', data: {name: vals[0], time: Date.now(), creator: username, host: username}, timestamp: Date.now()}));
 }
 
-function joinLobby(data) {
+function createdLobby(data) {
 	if (!data.status) {
 		Popup.toastPopup(data.data);
 		return;
 	}
-	ws.send(Utils.JSONStringify({tag: 'joinLobby', data: data.data, timestamp: Date.now()}));
 }
 
 function showLobby(data) {

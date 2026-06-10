@@ -999,7 +999,7 @@ class MultiAgentEnv:
 					await self.create_lobby()
 					return
 
-				for other_ws_idx in range(self.num_agents):
+				for other_ws_idx in range(1, self.num_agents):
 					other_ws = self.ws_list[other_ws_idx]
 					await other_ws.send(json.dumps({
 						'tag': 'joinLobby',
