@@ -2245,7 +2245,16 @@ class EloRatingSystem:
 			checkpoint = torch.load(model_path, weights_only = False)
 			checkpoint['elo_rating'] = self.ratings[model_path]
 			checkpoint['elo_games_played'] = self.games_played[model_path]
-			torch.save(checkpoint, model_path)
+
+			fd, tmp_path = tempfile.mkstemp(dir = os.path.dirname(model_path), suffix = '.pt.tmp')
+			try:
+				os.close(fd)
+				torch.save(checkpoint, tmp_path)
+				os.replace(tmp_path, model_path)
+			except BaseException:
+				if os.path.exists(tmp_path):
+					os.remove(tmp_path)
+				raise
 		except Exception as e:
 			warnings.warn(f'Could not save rating to [{model_path}]: {e}')
 
