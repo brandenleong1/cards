@@ -542,6 +542,7 @@ class MultiAgentEnv:
 		self.critic_optimizer: torch.optim.Optimizer | None =	None
 
 		self.elo_rating_system: EloRatingSystem =	EloRatingSystem(k_factor = self.args.k_factor)
+		self.eval_settings: dict =					{}
 		self.eval_games_per_match: int =			20
 		self.eval_total_matches: int =				0
 		self.eval_total_games: int =				0
@@ -561,7 +562,7 @@ class MultiAgentEnv:
 		self.clip_epsilon: float =					0.2
 		self.n_updates_per_batch: int =				8
 		self.mini_batch_size: int =					256
-		self.actor_lr: float =						3e-5
+		self.actor_lr: float =						2e-5
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
@@ -1059,13 +1060,13 @@ class MultiAgentEnv:
 					ws.connected = True
 
 					if ws_idx == 0:
-						settings = copy.deepcopy(msg['data']['gameData']['settings'])
-						settings['spectatorPolicy'] = 'constant'
-						settings['expose3'] = True
-						settings['zhuYangManJuan'] = True
+						self.eval_settings = copy.deepcopy(msg['data']['gameData']['settings'])
+						self.eval_settings['spectatorPolicy'] = 'constant'
+						self.eval_settings['expose3'] = True
+						self.eval_settings['zhuYangManJuan'] = True
 						await ws.send(json.dumps({
 							'tag': 'updateLobbySettings',
-							'data': {'settings': settings},
+							'data': {'settings': self.eval_settings},
 							'timestamp': int(time.time() * 1000)
 						}))
 
@@ -1074,6 +1075,9 @@ class MultiAgentEnv:
 						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
 						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
 						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
+
+						while not all(self.ws_list[i] is not None for i in range(self.num_agents)):
+							await asyncio.sleep(self.action_delay)
 
 						for ws_i in self.ws_list[1:]:
 							await ws_i.send(json.dumps({
@@ -1756,6 +1760,7 @@ class MultiAgentEnv:
 
 		batch_advantages, batch_returns =	self.compute_gaes(trajectories)		# (B,), (B,)
 		batch_returns = (batch_returns - batch_returns.mean()) / (batch_returns.std() + eps)
+		batch_returns = torch.clamp(batch_returns, -10, 10)
 
 		batch_state_dicts =		[
 									state for stream in trajectories['states']
@@ -2100,7 +2105,6 @@ class MultiAgentEnv:
 		while True:
 			# Load Matchup
 			batch_models = random.sample(model_paths, self.num_agents)
-			self.load_models(batch_models)
 
 			batch_model_names = [os.path.basename(p) for p in batch_models]
 			batch_model_ratings = [f'{self.elo_rating_system.get_rating(p):.2f}' for p in batch_models]
@@ -2112,64 +2116,94 @@ class MultiAgentEnv:
 				print(f' === Starting Evaluation Matchup === ', file = f)
 				print(f'  Models: {batch_model_names}', file = f)
 				print(f'  Ratings: {batch_model_ratings}', file = f)
-				print(f'  Games to Play: {self.eval_games_per_match}', file = f)
+				print(f'  Sets to Play: {self.eval_games_per_match}', file = f)
 
-			# Play [self.eval_games_per_match] Games
+			# Play [self.eval_games_per_match] Sets
 			for game_idx in range(self.eval_games_per_match):
 
-				# Reset State
-				for ws_idx in range(self.num_agents):
-					self.reset_game_state(ws_idx)
+				set_seed = int(time.time() * 1000)
+				set_models = random.sample(batch_models, self.num_agents)
+				set_scores = {model_path: 0.0 for model_path in set_models}
 
-				self.is_evaluating = False
+				has_invalid_game = False
 
-				self.eval_game_complete_event.clear()
-				self.eval_scores = [None for _ in range(self.num_agents)]
+				for rotation in range(self.num_agents):
+					rotated_models = [set_models[(i + rotation) % self.num_agents] for i in range(self.num_agents)]
+					self.load_models(rotated_models)
 
-				await ws.send(json.dumps({
-					'tag': 'startGame',
-					'timestamp': int(time.time() * 1000)
-				}))
+					# Update Seed
+					self.eval_settings['allowCustomSeed'] = True
+					self.eval_settings['customSeed'] = set_seed
+					await ws.send(json.dumps({
+						'tag': 'updateLobbySettings',
+						'data': {'settings': self.eval_settings},
+						'timestamp': int(time.time() * 1000)
+					}))
 
-				await self.eval_game_complete_event.wait()
+					# Reset State
+					for ws_idx in range(self.num_agents):
+						self.reset_game_state(ws_idx)
 
-				if any(score is None for score in self.eval_scores):
-					warnings.warn('Game ended buy scores were not captured, skipping ELO update')
+					self.is_evaluating = False
+
+					self.eval_game_complete_event.clear()
+					self.eval_scores = [None for _ in range(self.num_agents)]
+
+					await ws.send(json.dumps({
+						'tag': 'startGame',
+						'timestamp': int(time.time() * 1000)
+					}))
+
+					await self.eval_game_complete_event.wait()
+
+					if any(score is None for score in self.eval_scores):
+						has_invalid_game = True
+
+					else:
+						for ws_idx in range(self.num_agents):
+							seat = self._turn_order.index(self.ws_list[ws_idx].username)
+							set_scores[rotated_models[ws_idx]] += self.eval_scores[seat]
+
+					await ws.send(json.dumps({
+						'tag': 'sendCommand',
+						'data': 'EXIT',
+						'timestamp': int(time.time() * 1000),
+						'currentFrame': {'$bigint': str(self.eval_last_frame)}
+					}))
+
+					lobby_ready = await self.wait_for_lobby()
+
+					if not lobby_ready:
+						while not all(self._latest_observation[ws_idx] is None for ws_idx in range(self.num_agents)):
+							await asyncio.sleep(0.5)
+
+					if has_invalid_game:
+						break
+
+				if has_invalid_game:
+					warnings.warn('Game ended but scores were not captured, skipping ELO update')
 
 				else:
 					self.eval_total_games += 1
 
-					rating_changes = self.elo_rating_system.update_ratings(self.eval_model_paths, self.eval_scores)
+					agg_paths = list(set_scores.keys())
+					agg_scores = [set_scores[p] for p in agg_paths]
+					rating_changes = self.elo_rating_system.update_ratings(agg_paths, agg_scores)
 
 					log_path = os.path.join(self.args.model_dir, self.args.log_file)
 					os.makedirs(self.args.model_dir, exist_ok = True)
 					with open(log_path, 'a') as f:
-						print(f' --- Eval Game {game_idx + 1} / {self.eval_games_per_match} ---', file = f)
-						print(f'  Total Games: {self.eval_total_games}', file = f)
-						print(f'  Scores: {self.eval_scores}', file = f)
-						for i in range(self.num_agents):
-							model_path = self.eval_model_paths[i]
+						print(f' --- Eval Set {game_idx + 1} / {self.eval_games_per_match} (seed {set_seed}) ---', file = f)
+						print(f'  Total Sets: {self.eval_total_games}', file = f)
+						for model_path in agg_paths:
 							model_name = os.path.basename(model_path)
 							rating = self.elo_rating_system.get_rating(model_path)
-							change = rating_changes.get(model_path, 0)
-							print(f'  Agent {i} [{model_name}]:', file = f)
-							print(f'    Score = {self.eval_scores[i]}', file = f)
+							change = rating_changes.get(os.path.abspath(model_path), 0)
+							print(f'  [{model_name}]:', file = f)
+							print(f'    Aggregate Score = {set_scores[model_path]}', file = f)
 							print(f'    ELO = {rating:.4f} ({change:+.4f})', file = f)
 
 					self.save_all_ratings()
-
-				await ws.send(json.dumps({
-					'tag': 'sendCommand',
-					'data': 'EXIT',
-					'timestamp': int(time.time() * 1000),
-					'currentFrame': {'$bigint': str(self.eval_last_frame)}
-				}))
-
-				lobby_ready = await self.wait_for_lobby()
-
-				if not lobby_ready:
-					while not all(self._latest_observation[ws_idx] is None for ws_idx in range(self.num_agents)):
-						await asyncio.sleep(0.5)
 
 			# Matchup Complete
 			self.eval_total_matches += 1

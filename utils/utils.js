@@ -114,11 +114,11 @@ export function binaryInsert(list, item, compareFn = (a, b) => a - b) {
 	return mid;
 }
 
-// arr: Array[any]
-export function shuffleArray(arr) {
+// arr: Array[any], randFn: function(a: number): number
+export function shuffleArray(arr, randFn = Math.random) {
 	let arrN = structuredClone(arr);
 	for (let i = arrN.length - 1; i > 0; i--) {
-		const j = Math.floor(Math.random() * (i + 1));
+		const j = Math.floor(randFn() * (i + 1));
 		[arrN[i], arrN[j]] = [arrN[j], arrN[i]];
 	}
 	return arrN;

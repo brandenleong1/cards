@@ -403,19 +403,25 @@ function showLobby(data) {
 		list.append(div1);
 	}
 
-document.querySelector('#lobby-settings-spectator-policy').value = server.gameData.settings.spectatorPolicy;
-document.querySelector('#lobby-settings-losing-threshold').value = server.gameData.settings.losingThreshold;
-document.querySelector('#lobby-settings-expose-3').checked = server.gameData.settings.expose3;
-document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gameData.settings.zhuYangManJuan;
+	document.querySelector('#lobby-settings-spectator-policy').value = server.gameData.settings.spectatorPolicy;
+	document.querySelector('#lobby-settings-losing-threshold').value = server.gameData.settings.losingThreshold;
+	document.querySelector('#lobby-settings-expose-3').checked = server.gameData.settings.expose3;
+	document.querySelector('#lobby-settings-zhu-yang-man-juan').checked = server.gameData.settings.zhuYangManJuan;
+	document.querySelector('#lobby-settings-allow-custom-seed').checked = server.gameData.settings.allowCustomSeed;
+	document.querySelector('#lobby-settings-custom-seed').value = server.gameData.settings.customSeed;
 
-for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings select')) {
-	if (username == server.host) {
-		e.onchange = function() {
-			ws.send(Utils.JSONStringify({tag: 'updateLobbySettings', data: {settings: {
-				spectatorPolicy: document.querySelector('#lobby-settings-spectator-policy').value,
-				losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
-				expose3: document.querySelector('#lobby-settings-expose-3').checked,
-				zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked
+	document.querySelector('#lobby-settings-custom-seed').disabled = !document.querySelector('#lobby-settings-allow-custom-seed').checked;
+
+	for (let e of document.querySelectorAll('#lobby-settings input, #lobby-settings select')) {
+		if (username == server.host) {
+			e.onchange = function() {
+				ws.send(Utils.JSONStringify({tag: 'updateLobbySettings', data: {settings: {
+					spectatorPolicy: document.querySelector('#lobby-settings-spectator-policy').value,
+					losingThreshold: parseInt(document.querySelector('#lobby-settings-losing-threshold').value, 10),
+					expose3: document.querySelector('#lobby-settings-expose-3').checked,
+					zhuYangManJuan: document.querySelector('#lobby-settings-zhu-yang-man-juan').checked,
+					allowCustomSeed: document.querySelector('#lobby-settings-allow-custom-seed').checked,
+					customSeed: parseInt(document.querySelector('#lobby-settings-custom-seed').value, 10)
 				}}, timestamp: Date.now()}));
 			};
 			e.disabled = false;

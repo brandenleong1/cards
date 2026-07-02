@@ -148,6 +148,13 @@ let messageDecoder = {
 			return;
 		}
 
+		Object.defineProperty(server, 'dealRngFn', {
+			value: server.gameData.settings.allowCustomSeed ? seedrandom(server.gameData.settings.customSeed) : undefined,
+			enumerable: false,
+			writable: true,
+			configurable: true
+		});
+
 		Utils.broadcastToConnected(game.gong_zhu.users, server, {tag: 'startedGame', timestamp: Date.now()});
 
 		game.gong_zhu.initGame(server);

@@ -24,7 +24,9 @@ export const defaultSettings = {
 		spectatorPolicy: 'disallowed',
 		losingThreshold: -1000,
 		expose3: false,
-		zhuYangManJuan: false
+		zhuYangManJuan: false,
+		allowCustomSeed: false,
+		customSeed: 0
 	},
 	currentFrame: -1n,
 };
@@ -201,7 +203,7 @@ function resetRoundData(server) {
 
 	for (let i = 0; i < server.gameData.numDecks; i++) {
 		server.gameData.decks.push(GameUtils.initDeck());
-		server.gameData.decks[i] = Utils.shuffleArray(server.gameData.decks[i]);
+		server.gameData.decks[i] = Utils.shuffleArray(server.gameData.decks[i], server.dealRngFn || undefined);
 	}
 
 	for (let i = 0; i < server.gameData.turnOrder.length; i++) {
@@ -286,7 +288,7 @@ function generateTurnOrder(server) {
 	let connected = structuredClone(server.connected).filter(user => !user.spectateOnly).sort(function(a, b) {
 		return a.priority - b.priority;
 	}).map(user => user.username);
-	return Utils.shuffleArray(connected.slice(0, server.gameData.maxPlayers));
+	return Utils.shuffleArray(connected.slice(0, server.gameData.maxPlayers), server.dealRngFn || undefined);
 }
 
 export function initGame(server) {
@@ -298,7 +300,7 @@ export function initGame(server) {
 
 	for (let i = 0; i < gameData.numDecks; i++) {
 		gameData.decks.push(GameUtils.initDeck());
-		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i]);
+		gameData.decks[i] = Utils.shuffleArray(gameData.decks[i], server.dealRngFn || undefined);
 	}
 
 	gameData.turnOrder = generateTurnOrder(server);
