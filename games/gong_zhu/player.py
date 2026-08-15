@@ -386,11 +386,8 @@ class MultiWorkerMultiAgentEnv:
 			'PLAY': ActorNN('PLAY', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2)
 		})
 
-	def create_critic(self) -> torch.nn.ModuleDict:
-		return torch.nn.ModuleDict({
-			'SHOW': CriticNN((1024, 512, 256, 128), (1028, 512, 256), 256, 2),
-			'PLAY': CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
-		})
+	def create_critic(self) -> CriticNN:
+		return CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
 
 	def has_real_checkpoint(self) -> bool:
 		if self.args.model_dir is None or not os.path.isdir(self.args.model_dir):
@@ -500,7 +497,7 @@ class MultiAgentEnv:
 		mode: MultiAgentEnv.ModelModes | None = None,
 		worker_id: int = 0,
 		actor: torch.nn.ModuleDict | None = None,
-		critic: torch.nn.ModuleDict | None = None,
+		critic: CriticNN | None = None,
 		console_listeners: ConsoleListeners | None = None
 	) -> None:
 
@@ -566,7 +563,7 @@ class MultiAgentEnv:
 		self.critic_lr: float =						3e-4
 		self.entropy_coef: float =					0.01
 		self.max_grad_norm: float =					0.5
-		self.huber_loss_delta: float =				100.0
+		self.huber_loss_delta: float =				2.0
 
 	def reset(self) -> None:
 		num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
@@ -632,11 +629,8 @@ class MultiAgentEnv:
 			'PLAY': ActorNN('PLAY', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2)
 		})
 
-	def create_critic(self) -> torch.nn.ModuleDict:
-		return torch.nn.ModuleDict({
-			'SHOW': CriticNN((1024, 512, 256, 128), (1028, 512, 256), 256, 2),
-			'PLAY': CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
-		})
+	def create_critic(self) -> CriticNN:
+		return CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
 
 	def save_checkpoint(self, file_name: str | None = None) -> None:
 		checkpoint = {
@@ -1795,13 +1789,7 @@ class MultiAgentEnv:
 				batch_advantages[mask] = (phase_advantages - phase_advantages.mean()) / (phase_advantages.std() + eps)
 
 		with torch.no_grad():
-			batch_values_old = torch.zeros(len(batch_state_dicts))
-			if show_mask.any():
-				masked_states = MultiAgentEnv.get_masked_states(batch_states, show_mask)
-				batch_values_old[show_mask] = self.critic['SHOW'](masked_states)
-			if play_mask.any():
-				masked_states = MultiAgentEnv.get_masked_states(batch_states, play_mask)
-				batch_values_old[play_mask] = self.critic['PLAY'](masked_states)
+			batch_values_old = self.critic(batch_states)
 
 		if self.actor_optimizer is None:
 			self.actor_optimizer =		torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr,		fused = True)
@@ -1841,8 +1829,9 @@ class MultiAgentEnv:
 				mini_batch_play_mask =		play_mask[mini_batch_indices]
 
 				mini_batch_log_probs_new =	torch.zeros(mini_batch_indices.shape[0])
-				mini_batch_values_new =		torch.zeros(mini_batch_indices.shape[0])
 				mini_batch_entropy =		torch.tensor(0.0)
+
+				mini_batch_values_new = self.critic(mini_batch_states)
 
 				if mini_batch_show_mask.any():
 					show_log_probs, show_entropy = self.actor['SHOW'].evaluate_actions(
@@ -1853,8 +1842,6 @@ class MultiAgentEnv:
 					mini_batch_log_probs_new[mini_batch_show_mask] = show_log_probs
 					mini_batch_entropy += show_entropy
 
-					mini_batch_values_new[mini_batch_show_mask] = self.critic['SHOW'](MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_show_mask))
-
 				if mini_batch_play_mask.any():
 					play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
 						MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_play_mask),
@@ -1863,8 +1850,6 @@ class MultiAgentEnv:
 					)
 					mini_batch_log_probs_new[mini_batch_play_mask] = play_log_probs
 					mini_batch_entropy += play_entropy
-
-					mini_batch_values_new[mini_batch_play_mask] = self.critic['PLAY'](MultiAgentEnv.get_masked_states(mini_batch_states, mini_batch_play_mask))
 
 				ratios = torch.exp(mini_batch_log_probs_new - mini_batch_log_probs.detach())
 				ratios = torch.clamp(ratios, eps, 100.0)
@@ -1912,14 +1897,10 @@ class MultiAgentEnv:
 		all_episode_rewards = [rewards.sum() for stream in trajectories['rewards'] for rewards in stream]
 
 		with torch.no_grad():
-			predicted_values = torch.zeros(len(batch_state_dicts))
+			predicted_values = self.critic(batch_states)
 			if show_mask.any():
-				masked_states = MultiAgentEnv.get_masked_states(batch_states, show_mask)
-				predicted_values[show_mask] = self.critic['SHOW'](masked_states)
 				show_explained_variance = 1 - ((batch_returns[show_mask] - predicted_values[show_mask]).var() / (batch_returns[show_mask].var() + eps)).item()
 			if play_mask.any():
-				masked_states = MultiAgentEnv.get_masked_states(batch_states, play_mask)
-				predicted_values[play_mask] = self.critic['PLAY'](masked_states)
 				play_explained_variance = 1 - ((batch_returns[play_mask] - predicted_values[play_mask]).var() / (batch_returns[play_mask].var() + eps)).item()
 			explained_variance = 1 - ((batch_returns - predicted_values).var() / (batch_returns.var() + eps))
 
@@ -2000,19 +1981,8 @@ class MultiAgentEnv:
 				for k in stream_states[0].keys()
 			}
 
-			game_states = stacked_states['game_state']
-			show_mask = game_states[:, 0:2].sum(dim = 1) > 0
-			play_mask = game_states[:, 2:6].sum(dim = 1) > 0
-
 			with torch.no_grad():
-				batch_size = next(iter(stacked_states.values())).shape[0]
-				batch_values = torch.zeros(batch_size)
-				if show_mask.any():
-					batch_values[show_mask] = self.critic['SHOW'](MultiAgentEnv.get_masked_states(stacked_states, show_mask))
-				if play_mask.any():
-					batch_values[play_mask] = self.critic['PLAY'](MultiAgentEnv.get_masked_states(stacked_states, play_mask))
-
-				batch_values = batch_values.numpy()
+				batch_values = self.critic(stacked_states).numpy()
 
 			value_idx = 0
 			for episode_rewards in stream_rewards:
