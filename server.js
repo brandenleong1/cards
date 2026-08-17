@@ -1,16 +1,16 @@
-const express = require('express');
-const path = require('path');
-const http = require('http');
-const ws = require('ws');
-const seedrandom = require('seedrandom');
+import express from 'express';
+import http from 'http';
+import { WebSocketServer } from 'ws';
+import seedrandom from 'seedrandom';
+
+import { GongZhu } from './games/gong_zhu/server.js';
+import * as gameUtils from './utils/game_utils.js';
+import * as commandParse from './utils/command_parse.js';
+import * as Utils from './utils/utils.js';
 
 const game = {
-	gong_zhu: require(path.resolve(__dirname, './games/gong_zhu/server.js'))
+	gong_zhu: new GongZhu()
 };
-
-const gameUtils = require(path.resolve(__dirname, './utils/game_utils.js'));
-const commandParse = require(path.resolve(__dirname, './utils/command_parse.js'));
-const Utils = require(path.resolve(__dirname, './utils/utils.js'));
 
 seedrandom('', {global: true});
 
@@ -18,7 +18,7 @@ const app = express();
 const app_port = process.env.PORT || 8080;
 
 const server = http.createServer(app);
-const wss = new ws.Server({server});
+const wss = new WebSocketServer({server});
 
 let wssClientsArchive = new Map();	// SessionID => {WS Info, Disconnect Time}
 
