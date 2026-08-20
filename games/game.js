@@ -11,14 +11,6 @@ export class Game {
 		throw new Error('defaultSettings must be implemented by subclass');
 	}
 
-	gameNSL(server) {
-		throw new Error('gameNSL must be implemented by subclass');
-	}
-
-	gameOFL(server) {
-		throw new Error('gameOFL must be implemented by subclass');
-	}
-
 	obfuscateGameData(gameData, turnOrderIdx) {
 		throw new Error('obfuscateGameData must be implemented by subclass');
 	}
@@ -173,21 +165,6 @@ export class Game {
 		toRemove.forEach(user => this.removeSpectator(user, server));
 
 		server.connected.forEach(user => this.users.get(user.username).send(Utils.JSONStringify({tag: 'showLobby', status: 1, data: server, timestamp: Date.now()})));
-	}
-
-	clearGameData(server) {
-		let properties = [
-			'gameState',
-			'decks',
-			'turnOrder',
-			'needToAct',
-			'hands',
-			'stacks',
-			'scores'
-		];
-		for (let property of properties) {
-			server.gameData[property] = structuredClone(this.defaultSettings[property]);
-		}
 	}
 
 	rotateSpectators(server) {
