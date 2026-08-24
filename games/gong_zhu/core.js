@@ -232,7 +232,7 @@ export function scoreFromCards(cardArr, gameData) {
 	let heartSet = new Set(new Array(13).fill(0).map((e, i) => i + 13));
 
 	let modifiers = [11, 13, 36, 48].reduce((dict, e) => {
-		let idx = gameData.stacks[1].findIndex(card => card[0] == e)
+		let idx = gameData.stacks[1].findIndex(card => card[0] == e);
 		dict[e] = (idx == -1 ? 1 : gameData.stacks[1][idx][1]);
 		return dict;
 	}, {});
@@ -254,7 +254,6 @@ export function scoreFromCards(cardArr, gameData) {
 		for (let i = 17; i <= 22; i++) if (cardSet.has(i)) c += modifiers[13] * -10;
 		if (cardSet.has(36)) c += modifiers[36] * 100;
 	}
-
 
 	if (cardSet.has(48)) {
 		if (cardSet.size == 1) {
