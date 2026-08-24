@@ -4,3 +4,5 @@ package-lock.json
 **/.venv/
 **/__pycache__/
 **/*.swp
+build/
+tags
