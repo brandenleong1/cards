@@ -43,7 +43,7 @@ public:
 	void resetRoundData();
 	void clearGameData();
 	void initGameData();
-	std::vector<Message> initGame(const std::vector<Player>& turnOrder);
+	std::vector<Message> initGame(const std::vector<Player>& newTurnOrder);
 	std::vector<Message> gameNSL();
 	std::vector<Message> gameOFL();
 	std::unordered_set<Card> getLegalMoves(const size_t turnOrderIdx) const;

@@ -1,6 +1,8 @@
 add_library(cards STATIC
 	src/cards.cpp
+	src/message.cpp
 	src/player.cpp
+	src/rng.cpp
 	src/utils.cpp
 )
 target_include_directories(cards PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

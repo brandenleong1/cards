@@ -57,8 +57,8 @@ void GameData::initGameData() {
 	this->turnFirstIdx = 0;
 }
 
-std::vector<Message> GameData::initGame(const std::vector<Player>& turnOrder) {
-	this->turnOrder = turnOrder;
+std::vector<Message> GameData::initGame(const std::vector<Player>& newTurnOrder) {
+	this->turnOrder = newTurnOrder;
 
 	this->resetRoundData();
 	this->initGameData();
@@ -160,7 +160,7 @@ std::vector<Message> GameData::gameOFL() {
 				return has2Clubs;
 			});
 			assert(it != this->hands.end() && "[gong_zhu::GameData::gameOFL] Cannot find 2 of Spades to start game");
-			this->turnFirstIdx = std::distance(this->hands.begin(), it);
+			this->turnFirstIdx = static_cast<size_t>(std::distance(this->hands.begin(), it));
 		}
 		this->needToAct.assign(numPlayers, false);
 		this->needToAct[this->turnFirstIdx] = true;
@@ -213,8 +213,8 @@ std::vector<Message> GameData::gameOFL() {
 }
 
 std::unordered_set<Card> GameData::getLegalMoves(const size_t turnOrderIdx) const {
-	const int64_t numPlayers = this->turnOrder.size();
-	const size_t relativeIdx = (((static_cast<int64_t>(turnOrderIdx) - static_cast<int64_t>(this->turnFirstIdx)) % numPlayers) + numPlayers) % numPlayers;
+	const int64_t numPlayers = static_cast<int64_t>(this->turnOrder.size());
+	const size_t relativeIdx = static_cast<size_t>((((static_cast<int64_t>(turnOrderIdx) - static_cast<int64_t>(this->turnFirstIdx)) % numPlayers) + numPlayers) % numPlayers);
 
 	assert(turnOrderIdx < this->hands.size() && "[gong_zhu::GameData::getLegalMoves] turnOrderIdx must be less than or equal to this->hands.size()");
 
@@ -328,10 +328,14 @@ int64_t GameData::getScoreFromCards(const std::vector<Card>& cards) const {
 
 // TODO
 std::tuple<bool, std::vector<Message>> GameData::applyCommand(
-	const size_t turnOrderIdx,
-	const std::string& command,
-	std::vector<Player>* newTurnOrder
-) {}
+	[[maybe_unused]] const size_t turnOrderIdx,
+	[[maybe_unused]] const std::string& command,
+	[[maybe_unused]] std::vector<Player>* newTurnOrder
+) {
+	std::tuple<bool, std::vector<Message>> ret;
+
+	return ret;
+}
 
 GameData GameData::obfuscateGameData(const size_t turnOrderIdx) const {
 	GameData gameData(*this);
