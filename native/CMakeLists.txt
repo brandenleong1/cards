@@ -1,5 +1,6 @@
 add_library(cards STATIC
 	src/cards.cpp
+	src/command.cpp
 	src/message.cpp
 	src/player.cpp
 	src/rng.cpp
