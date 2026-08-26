@@ -1,11 +1,12 @@
 #include <optional>
 #include <vector>
 
-#include "common/cards.h"
+#include "cards/cards.h"
 
 #pragma once
 
 
+namespace cards {
 namespace gong_zhu {
 
 struct Hand {
@@ -16,3 +17,4 @@ struct Hand {
 };
 
 } // namespace gong_zhu
+} // namespace cards

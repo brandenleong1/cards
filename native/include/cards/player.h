@@ -3,6 +3,8 @@
 #pragma once
 
 
+namespace cards {
+
 class Player {
 private:
 	std::string name;
@@ -14,3 +16,5 @@ public:
 		return this->name;
 	}
 };
+
+} // namespace cards

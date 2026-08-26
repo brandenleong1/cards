@@ -3,9 +3,12 @@
 #include <type_traits>
 #include <vector>
 
-#include "common/cards.h"
+#include "cards/cards.h"
 
 #pragma once
+
+
+namespace cards {
 
 [[ nodiscard ]] std::vector<Card> initDeck();
 
@@ -24,3 +27,4 @@ inline void hideAllCards(Card& card) {
 	card.setHidden(true);
 }
 
+} // namespace cards

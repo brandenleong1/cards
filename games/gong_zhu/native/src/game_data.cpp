@@ -8,10 +8,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "common/utils.h"
+#include "cards/utils.h"
 #include "gong_zhu/game_data.h"
 
 
+namespace cards {
 namespace gong_zhu {
 
 static const GameData defaultState;
@@ -62,7 +63,7 @@ std::vector<Message> GameData::initGame(const std::vector<Player>& newTurnOrder)
 
 	this->resetRoundData();
 	this->initGameData();
-	
+
 	this->currentFrame = 0;
 
 	return this->gameOFL();
@@ -326,7 +327,6 @@ int64_t GameData::getScoreFromCards(const std::vector<Card>& cards) const {
 	return score;
 }
 
-// TODO
 std::tuple<bool, std::vector<Message>> GameData::applyCommand(
 	[[maybe_unused]] const size_t turnOrderIdx,
 	[[maybe_unused]] const std::string& command,
@@ -370,7 +370,7 @@ GameData GameData::obfuscateGameData(const size_t turnOrderIdx) const {
 
 		if (i != turnOrderIdx) {
 			hideAllCards(hand.toPlay);
-			
+
 			std::vector<Card>& shown = hand.shown;
 			shown.erase(std::remove_if(shown.begin(), shown.end(), [&shownCardsSet](const Card& card) -> bool {
 				return shownCardsSet.count(card) == 0;
@@ -382,3 +382,4 @@ GameData GameData::obfuscateGameData(const size_t turnOrderIdx) const {
 }
 
 } // namespace gong_zhu
+} // namespace cards

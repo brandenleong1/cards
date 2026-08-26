@@ -7,6 +7,8 @@
 #pragma once
 
 
+namespace cards {
+
 enum class CardRank : uint8_t {
 	rA,
 	r2,
@@ -76,11 +78,13 @@ public:
 	bool operator>(const Card& other) const noexcept;
 };
 
+} // namespace cards
+
 namespace std {
 
 template <>
-struct hash<Card> {
-	size_t operator()(const Card& card) const noexcept {
+struct hash<cards::Card> {
+	size_t operator()(const cards::Card& card) const noexcept {
 		const size_t h1 = std::hash<uint8_t>{}(card.getCardId());
 
 		return h1;

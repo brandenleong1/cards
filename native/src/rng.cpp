@@ -1,7 +1,9 @@
 #include <utility>
 
-#include "common/rng.h"
+#include "cards/rng.h"
 
+
+namespace cards {
 
 SeededShuffler::SeededShuffler(const uint32_t seed) : state(seed) {}
 
@@ -29,3 +31,5 @@ void ScriptedShuffler::shuffle(std::vector<Card>& deck) {
 	deck = std::move(this->deque.front());
 	this->deque.pop_front();
 }
+
+} // namespace cards

@@ -4,6 +4,7 @@
 #pragma once
 
 
+namespace cards {
 namespace gong_zhu {
 
 struct GameSettings {
@@ -21,6 +22,7 @@ enum class GameState : uint8_t {
 #undef GAME_STATE
 };
 
-std::string to_string(const gong_zhu::GameState& gameState) noexcept;
+std::string to_string(const GameState& gameState) noexcept;
 
 } // namespace gong_zhu
+} // namespace cards

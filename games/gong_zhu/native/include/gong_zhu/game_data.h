@@ -3,15 +3,16 @@
 #include <tuple>
 #include <unordered_set>
 
-#include "common/cards.h"
-#include "common/message.h"
-#include "common/player.h"
+#include "cards/cards.h"
+#include "cards/message.h"
+#include "cards/player.h"
 #include "gong_zhu/game_state.h"
 #include "gong_zhu/hand.h"
 
 #pragma once
 
 
+namespace cards {
 namespace gong_zhu {
 
 struct GameData {
@@ -57,3 +58,4 @@ public:
 };
 
 } // namespace gong_zhu
+} // namespace cards

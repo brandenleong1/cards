@@ -1,10 +1,12 @@
 #include <deque>
 #include <vector>
 
-#include "common/cards.h"
+#include "cards/cards.h"
 
 #pragma once
 
+
+namespace cards {
 
 class Shuffler {
 public:
@@ -31,3 +33,5 @@ public:
 	void push(const std::vector<Card>& permutation);
 	void shuffle(std::vector<Card>& deck) override;
 };
+
+} // namespace cards

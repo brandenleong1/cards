@@ -1,7 +1,9 @@
 #include <type_traits>
 
-#include "common/cards.h"
+#include "cards/cards.h"
 
+
+namespace cards {
 
 std::string Card::toString() const noexcept {
 	if (this->isHidden) {
@@ -63,3 +65,5 @@ bool Card::operator<(const Card& other) const noexcept {
 bool Card::operator>(const Card& other) const noexcept {
 	return this->cardId > other.cardId;
 }
+
+} // namespace cards

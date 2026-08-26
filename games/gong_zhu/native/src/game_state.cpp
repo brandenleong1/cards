@@ -1,6 +1,7 @@
 #include "gong_zhu/game_state.h"
 
 
+namespace cards {
 namespace gong_zhu {
 
 std::string to_string(const GameState& gameState) noexcept {
@@ -16,3 +17,4 @@ std::string to_string(const GameState& gameState) noexcept {
 }
 
 } // namespace gong_zhu
+} // namespace cards

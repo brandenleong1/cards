@@ -1,7 +1,9 @@
 #include <random>
 
-#include "common/utils.h"
+#include "cards/utils.h"
 
+
+namespace cards {
 
 [[ nodiscard ]] std::vector<Card> initDeck() {
 	constexpr size_t numCards = 52;
@@ -65,3 +67,5 @@ std::mt19937 rng(rd());
 
 	return result;
 }
+
+} // namespace cards
