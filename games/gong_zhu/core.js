@@ -323,7 +323,7 @@ export function applyCommand(gameData, seat, command, rngFn = undefined, newTurn
 					});
 					status = 0;
 				} else if (gameData.gameState == 'SHOW_3' || gameData.gameState == 'SHOW_ALL') {
-					let invalidArgIdx = args.findIndex(e => [11, 13, 36, 48].indexOf(gameData.hands[seat][0][e]) == -1 || gameData.stacks[1].findIndex(e1 => e1 == gameData.hands[seat][0][e]) != -1);
+					let invalidArgIdx = args.findIndex(e => [11, 13, 36, 48].indexOf(gameData.hands[seat][0][e]) == -1);
 					if (invalidArgIdx != -1) {
 						ret.push({
 							msg: 'Invalid argument at index [' + (invalidArgIdx + 1) + '] for [' + commandUpper + '] (argument "' + command.command[invalidArgIdx + 1] + '")',

@@ -54,7 +54,7 @@ public:
 		assert(this->cardId <= 53 && "[Card::Card] cardId must be <= 53");
 	}
 	constexpr Card(const CardRank& rank, const CardSuit& suit) :
-		cardId(static_cast<std::underlying_type_t<CardRank>>(rank) + (static_cast<std::underlying_type_t<CardSuit>>(suit) * 13)) {
+		cardId(static_cast<uint8_t>(static_cast<std::underlying_type_t<CardRank>>(rank) + (static_cast<std::underlying_type_t<CardSuit>>(suit) * 13))) {
 	}
 
 

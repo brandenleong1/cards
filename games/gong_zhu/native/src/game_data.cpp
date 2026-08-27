@@ -3,11 +3,13 @@
 #include <cassert>
 #include <execution>
 #include <iterator>
+#include <optional>
 #include <set>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "cards/command.h"
 #include "cards/utils.h"
 #include "gong_zhu/game_data.h"
 
@@ -17,7 +19,7 @@ namespace gong_zhu {
 
 static const GameData defaultState;
 
-void GameData::resetRoundData() {
+void GameData::resetRoundData(Shuffler& shuffler) {
 	this->decks = defaultState.decks;
 	this->hands = defaultState.hands;
 	this->stacks = defaultState.stacks;
@@ -26,7 +28,7 @@ void GameData::resetRoundData() {
 	this->hands.resize(this->turnOrder.size());
 
 	for (uint8_t i = 0; i < this->numDecks; i++) {
-		this->decks[i] = shuffleArray(this->decks[i]);
+		this->decks[i] = shuffleArray(this->decks[i], shuffler);
 	}
 
 	for (size_t i = 0; i < this->scores.size(); i++) {
@@ -58,18 +60,21 @@ void GameData::initGameData() {
 	this->turnFirstIdx = 0;
 }
 
-std::vector<Message> GameData::initGame(const std::vector<Player>& newTurnOrder) {
+std::vector<Message> GameData::initGame(
+	const std::vector<Player>& newTurnOrder,
+	Shuffler& shuffler
+) {
 	this->turnOrder = newTurnOrder;
 
-	this->resetRoundData();
+	this->resetRoundData(shuffler);
 	this->initGameData();
 
 	this->currentFrame = 0;
 
-	return this->gameOFL();
+	return this->gameOFL(shuffler);
 }
 
-std::vector<Message> GameData::gameNSL() {
+std::vector<Message> GameData::gameNSL(Shuffler& shuffler) {
 	GameState& state = this->gameState;
 
 	if (state == GameState::SHOW_3) {
@@ -117,16 +122,16 @@ std::vector<Message> GameData::gameNSL() {
 	}
 
 	this->currentFrame++;
-	return this->gameOFL();
+	return this->gameOFL(shuffler);
 }
 
-std::vector<Message> GameData::gameOFL() {
+std::vector<Message> GameData::gameOFL(Shuffler& shuffler) {
 	const size_t numPlayers = this->turnOrder.size();
 	const GameState& state = this->gameState;
 	std::vector<Message> ret;
 
 	if (state == GameState::SHOW_3) {
-		this->resetRoundData();
+		this->resetRoundData(shuffler);
 		this->round++;
 
 		for (size_t i = 0; i < numPlayers; i++) {
@@ -139,7 +144,7 @@ std::vector<Message> GameData::gameOFL() {
 		}
 	} else if (state == GameState::SHOW_ALL) {
 		if (!this->settings.expose3) {
-			this->resetRoundData();
+			this->resetRoundData(shuffler);
 			this->round++;
 		}
 
@@ -157,8 +162,8 @@ std::vector<Message> GameData::gameOFL() {
 		};
 		if (std::get<0>(this->stacks).size() == 0 && std::all_of(this->hands.begin(), this->hands.end(), isHandNotPlayed)) {
 			const auto it = std::find_if(this->hands.begin(), this->hands.end(), [](const Hand& hand) -> bool {
-				const bool has2Clubs = std::find(hand.toPlay.begin(), hand.toPlay.end(), 1) != hand.toPlay.end();
-				return has2Clubs;
+				const bool has2Spades = std::find(hand.toPlay.begin(), hand.toPlay.end(), 1) != hand.toPlay.end();
+				return has2Spades;
 			});
 			assert(it != this->hands.end() && "[gong_zhu::GameData::gameOFL] Cannot find 2 of Spades to start game");
 			this->turnFirstIdx = static_cast<size_t>(std::distance(this->hands.begin(), it));
@@ -327,14 +332,273 @@ int64_t GameData::getScoreFromCards(const std::vector<Card>& cards) const {
 	return score;
 }
 
-std::tuple<bool, std::vector<Message>> GameData::applyCommand(
-	[[maybe_unused]] const size_t turnOrderIdx,
-	[[maybe_unused]] const std::string& command,
-	[[maybe_unused]] std::vector<Player>* newTurnOrder
-) {
-	std::tuple<bool, std::vector<Message>> ret;
+namespace {
 
-	return ret;
+inline bool isScoringCard(const uint8_t cardId) {
+	return cardId == 11 || (cardId >= 13 && cardId <= 25) || cardId == 36 || cardId == 48;
+}
+
+} // namespace
+
+std::tuple<int8_t, std::vector<Message>> GameData::applyCommand(
+	const size_t turnOrderIdx,
+	const std::string& command,
+	Shuffler& shuffler,
+	const std::vector<Player>* const newTurnOrder
+) {
+	std::vector<Message> ret;
+	int8_t status = 1;
+
+	ParsedCommand parsedCommand = parseCommand(command);
+	if (parsedCommand.command.empty()) {
+		return {false, ret};
+	}
+
+	const std::string commandUpper = toUpper(parsedCommand.command[0]);
+
+	const int64_t numPlayers = static_cast<int64_t>(this->turnOrder.size());
+	const size_t relativeIdx = static_cast<size_t>((((static_cast<int64_t>(turnOrderIdx) - static_cast<int64_t>(this->turnFirstIdx)) % numPlayers) + numPlayers) % numPlayers);
+
+	const auto gotBadCommandInState = [&ret, &status, &commandUpper, this]() -> void {
+		ret.emplace_back(
+			/* content = */ "Cannot issue command [" + commandUpper + "] in state [" + to_string(this->gameState) + "]",
+			/* toAll */ false
+		);
+		status = 0;
+	};
+
+	if (commandUpper == "DEAL") {
+		if (newTurnOrder != nullptr) {
+			this->clearGameData();
+			this->turnOrder = *newTurnOrder;
+			this->initGameData();
+		}
+		if (
+			this->gameState == GameState::LEADERBOARD ||
+			this->gameState == GameState::SCORE
+		) {
+			const std::vector<Message> messages = this->gameNSL(shuffler);
+			ret.insert(ret.end(), messages.begin(), messages.end());
+			ret.emplace_back(
+				/* content = */ "Started Round " + std::to_string(this->round),
+				/* toAll = */ true
+			);
+		} else {
+			gotBadCommandInState();
+		}
+	} else if (commandUpper == "PLAY") {
+		if (
+			this->gameState != GameState::SHOW_3 &&
+			this->gameState != GameState::SHOW_ALL &&
+			this->gameState != static_cast<GameState>(static_cast<std::underlying_type_t<GameState>>(GameState::PLAY_0) + relativeIdx)
+		) {
+			gotBadCommandInState();
+		} else if (parsedCommand.command.size() < 2) {
+			ret.emplace_back(
+				/* content = */ "Insufficient arguments for [" + commandUpper + "] (need 1)",
+				/* toAll = */ false
+			);
+			status = 0;
+		} else {
+			Hand& myHand = this->hands[turnOrderIdx];
+			std::vector<size_t> args;
+			int64_t invalidArgIdx = -1;
+			for (size_t i = 1; i < parsedCommand.command.size(); i++) {
+				const std::optional<int64_t> val = toInt(parsedCommand.command[i]);
+				if (!val.has_value() || val.value() < 0 || val.value() >= static_cast<int64_t>(myHand.toPlay.size())) {
+					invalidArgIdx= static_cast<int64_t>(i);
+					break;
+				}
+				args.push_back(static_cast<size_t>(val.value()));
+			}
+
+			if (invalidArgIdx != -1) {
+				ret.emplace_back(
+					/* content = */ "Invalid argument at index [" + std::to_string(invalidArgIdx) + "] for [" + commandUpper + "] (argument \"" + parsedCommand.command[static_cast<size_t>(invalidArgIdx)] + "\")",
+					/* toAll = */ false
+				);
+				status = 0;
+			} else if (
+				this->gameState == GameState::SHOW_3 ||
+				this->gameState == GameState::SHOW_ALL
+			) {
+				int64_t invalidShowArgIdx = -1;
+				for (size_t i = 0; i < args.size(); i++) {
+					const Card& cardToShow = myHand.toPlay[args[i]];
+					if (
+						!isScoringCard(cardToShow.getCardId()) ||
+						(cardToShow.getCardId() >= 14 && cardToShow.getCardId() <= 25)
+					) {
+						invalidShowArgIdx = static_cast<int64_t>(i + 1);
+						break;
+					}
+				}
+
+				if (invalidShowArgIdx != -1) {
+					ret.emplace_back(
+						/* content = */ "Invalid argument at index [" + std::to_string(invalidShowArgIdx) + "] for [" + commandUpper + "] (argument \"" + parsedCommand.command[static_cast<size_t>(invalidShowArgIdx)] + "\")",
+						/* toAll = */ false
+					);
+					status = 0;
+				} else {
+					const uint8_t multiplier = (this->gameState == GameState::SHOW_3) ? 4 : 2;
+					for (const size_t arg : args) {
+						const Card& card = myHand.toPlay[arg];
+						if (std::find(myHand.shown.begin(), myHand.shown.end(), card) == myHand.shown.end()) {
+							std::get<1>(this->stacks).emplace_back(card, multiplier);
+							myHand.shown.push_back(card);
+							ret.emplace_back(
+								/* content = */ "Shown card [" + card.toString() + "] for x" + std::to_string(multiplier) + " value",
+								/* toAll = */ false
+							);
+						}
+					}
+				}
+			} else if (args.size() != 1) {
+				ret.emplace_back(
+					/* content = */ "Too many arguments for [" + commandUpper + "] (max 1)",
+					/* toAll = */ false
+				);
+				status = 0;
+			} else {
+				const std::unordered_set<Card> legalMoves = this->getLegalMoves(turnOrderIdx);
+				int64_t invalidPlayArgIdx = -1;
+				for (size_t i = 0; i < args.size(); i++) {
+					if (legalMoves.count(myHand.toPlay[args[i]]) == 0) {
+						invalidPlayArgIdx = static_cast<int64_t>(i + 1);
+						break;
+					}
+				}
+
+				if (invalidPlayArgIdx != -1) {
+					ret.emplace_back(
+						/* content = */ "Invalid argument at index [" + std::to_string(invalidPlayArgIdx) + "] for [" + commandUpper + "] (argument \"" + parsedCommand.command[static_cast<size_t>(invalidPlayArgIdx)] + "\")",
+						/* toAll = */ false
+					);
+					status = 0;
+				} else {
+					const Card cardToPlay = myHand.toPlay[args[0]];
+					ret.emplace_back(
+						/* content = */ "Player [" + this->turnOrder[turnOrderIdx].getName() + "] played card [" + cardToPlay.toString() + "]",
+						/* toAll = */ true
+					);
+
+					const auto it = std::find(myHand.shown.begin(), myHand.shown.end(), cardToPlay);
+					if (it != myHand.shown.end()) {
+						myHand.shown.erase(it);
+					}
+					myHand.toPlay.erase(myHand.toPlay.begin() + static_cast<int64_t>(args[0]));
+					myHand.played = cardToPlay;
+
+					if (this->gameState == GameState::PLAY_3) {
+						assert(this->hands[this->turnFirstIdx].played.has_value() && "[gong_zhu::GameData::applyCommand] Could not find played card during collection");
+
+						const Card& playedLeadingCard = this->hands[this->turnFirstIdx].played.value();
+						const CardSuit trickSuit = playedLeadingCard.getCardSuit();
+
+						size_t winnerIdx = this->turnFirstIdx;
+						CardRank winnerRank = playedLeadingCard.getCardRank();
+
+						for (size_t i = 0; i < this->turnOrder.size(); i++) {
+							assert(this->hands[i].played.has_value() && "[gong_zhu::GameData::applyCommand] Could not find played card during collection");
+
+							const Card& playedCard = this->hands[i].played.value();
+
+							const CardRank myRank = playedCard.getCardRank();
+							const CardSuit mySuit = playedCard.getCardSuit();
+
+							if (mySuit == trickSuit) {
+								if (myRank == CardRank::rA || (winnerRank != CardRank::rA && myRank > winnerRank)) {
+									winnerIdx = i;
+									winnerRank = myRank;
+								}
+							}
+						}
+
+						this->turnFirstIdx = winnerIdx;
+
+						std::vector<Card> collected;
+						for (size_t i = 0; i < this->turnOrder.size(); i++) {
+							assert(this->hands[i].played.has_value() && "[gong_zhu::GameData::applyCommand] Could not find played card during collection");
+
+							const Card& playedCard = this->hands[i].played.value();
+
+							if (isScoringCard(playedCard.getCardId())) {
+								this->hands[winnerIdx].collected.push_back(playedCard);
+								collected.push_back(playedCard);
+							}
+						}
+
+						std::get<1>(this->scores[winnerIdx]) = this->getScoreFromCards(this->hands[winnerIdx].collected);
+
+						std::string collectedStr;
+						for (size_t i = 0; i < collected.size(); i++) {
+							collectedStr += (i != 0) ? ", " : "";
+							collectedStr += collected[i].toString();
+						}
+
+						ret.emplace_back(
+							/* content = */ "Player [" + this->turnOrder[winnerIdx].getName() + "] wins with [" + this->hands[winnerIdx].played.value().toString() + "] and takes [" + collectedStr + "]",
+							/* toAll = */ true
+						);
+
+						for (Hand& hand : this->hands) {
+							std::get<0>(this->stacks).push_back(hand.played.value());
+							hand.played.reset();
+						}
+
+						for (Hand& hand : this->hands) {
+							hand.shown.erase(std::remove_if(
+								hand.shown.begin(), hand.shown.end(),
+								[&trickSuit](const Card& card) -> bool {
+									return card.getCardSuit() == trickSuit;
+								}
+							), hand.shown.end());
+						}
+
+						const bool allEmpty = std::all_of(
+							this->hands.begin(), this->hands.end(),
+							[](const Hand& hand) -> bool {
+								return hand.toPlay.empty();
+							}
+						);
+
+						if (allEmpty) {
+							for (std::tuple<int64_t, int64_t>& score : this->scores) {
+								std::get<0>(score) += std::get<1>(score);
+							}
+						}
+					}
+
+					const std::vector<Message> messages = this->gameNSL(shuffler);
+					ret.insert(ret.end(), messages.begin(), messages.end());
+				}
+			}
+		}
+	} else if (commandUpper == "PASS") {
+		if (parsedCommand.command.size() > 1) {
+			ret.emplace_back(
+				/* content = */ "Too many arguments for [" + commandUpper + "] (need 0)",
+				/* toAll = */ false
+			);
+			status = 0;
+		} else if (
+			this->gameState != GameState::SHOW_3 &&
+			this->gameState != GameState::SHOW_ALL
+		) {
+			gotBadCommandInState();
+		} else {
+			this->needToAct[turnOrderIdx] = false;
+			if (std::none_of(this->needToAct.begin(), this->needToAct.end(), [](const bool needsToAct) -> bool {
+				return needsToAct;
+			})) {
+				const std::vector<Message> messages = this->gameNSL(shuffler);
+				ret.insert(ret.end(), messages.begin(), messages.end());
+			}
+		}
+	}
+
+	return {status, ret};
 }
 
 GameData GameData::obfuscateGameData(const size_t turnOrderIdx) const {

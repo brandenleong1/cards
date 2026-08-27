@@ -6,6 +6,7 @@
 #include "cards/cards.h"
 #include "cards/message.h"
 #include "cards/player.h"
+#include "cards/rng.h"
 #include "gong_zhu/game_state.h"
 #include "gong_zhu/hand.h"
 
@@ -41,18 +42,22 @@ struct GameData {
 	int64_t                             currentFrame = -1;
 
 public:
-	void resetRoundData();
+	void resetRoundData(Shuffler& shuffler);
 	void clearGameData();
 	void initGameData();
-	std::vector<Message> initGame(const std::vector<Player>& newTurnOrder);
-	std::vector<Message> gameNSL();
-	std::vector<Message> gameOFL();
+	std::vector<Message> initGame(
+		const std::vector<Player>& newTurnOrder,
+		Shuffler& shuffler
+	);
+	std::vector<Message> gameNSL(Shuffler& shuffler);
+	std::vector<Message> gameOFL(Shuffler& shuffler);
 	std::unordered_set<Card> getLegalMoves(const size_t turnOrderIdx) const;
 	int64_t getScoreFromCards(const std::vector<Card>& cards) const;
-	std::tuple<bool, std::vector<Message>> applyCommand(
+	std::tuple<int8_t, std::vector<Message>> applyCommand(
 		const size_t turnOrderIdx,
 		const std::string& command,
-		std::vector<Player>* newTurnOrder = nullptr
+		Shuffler& shuffler,
+		const std::vector<Player>* const newTurnOrder = nullptr
 	);
 	GameData obfuscateGameData(const size_t turnOrderIdx) const;
 };

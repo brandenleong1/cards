@@ -52,18 +52,10 @@ namespace cards {
 	return result;
 }
 
-namespace {
-
-// TODO: get rid of static generator
-std::random_device rd;
-std::mt19937 rng(rd());
-
-} // namespace
-
-[[ nodiscard ]] std::vector<Card> shuffleArray(const std::vector<Card>& arr) {
+[[ nodiscard ]] std::vector<Card> shuffleArray(const std::vector<Card>& arr, Shuffler& shuffler) {
 	std::vector<Card> result(arr);
 
-	std::shuffle(result.begin(), result.end(), rng);
+	shuffler.shuffle(result);
 
 	return result;
 }
