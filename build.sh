@@ -62,3 +62,21 @@ cmake --preset "$PRESET"
 
 echo "Building..."
 cmake --build build -j
+
+VENV_DIR="$SCRIPT_DIR/.venv"
+if [ ! -d "$VENV_DIR" ]; then
+	echo "Creating venv at $VENV_DIR ..."
+	python3 -m venv "$VENV_DIR"
+fi
+
+# shellcheck source=/dev/null
+source "$VENV_DIR/bin/activate"
+
+echo "Upgrading pip..."
+python -m pip install --upgrade pip
+
+echo "Installing Python requirements..."
+python -m pip install -r "$SCRIPT_DIR/requirements.txt"
+
+echo "Installing native module (gong_zhu_native)..."
+python -m pip install "$SCRIPT_DIR"

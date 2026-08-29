@@ -1,0 +1,14 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cards"
+version = "0.0.1"
+description = "Card game rules cores (C++ via pybind11)"
+requires-python = ">=3.10"
+
+[tool.scikit-build]
+cmake.version = ">=3.16"
+cmake.args = ["-DCARDS_BUILD_PYTHON=ON"]
+wheel.install-dir = "."

@@ -48,5 +48,11 @@ function(cards_add_library name)
 	target_compile_features(${name} PUBLIC cxx_std_17)
 endfunction()
 
+option(CARDS_BUILD_PYTHON "Build the pybind11 Python module" OFF)
+if(CARDS_BUILD_PYTHON)
+	set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+	find_package(pybind11 CONFIG REQUIRED)
+endif()
+
 add_subdirectory(native)
 add_subdirectory(games/gong_zhu/native)
