@@ -4,6 +4,7 @@ import argparse
 import copy
 import enum
 import functools
+import gc
 import glob
 import itertools as it
 import json
@@ -28,6 +29,11 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from typing import Any
+
+try:
+	from cards import gong_zhu
+except ImportError:
+	gong_zhu = None
 
 
 GAME_SETTINGS = {
@@ -82,8 +88,8 @@ def json_parser(obj: dict) -> Any:
 class ConsoleListeners:
 	def __init__(self) -> None:
 		self.listeners: list[websockets.asyncio.client.ClientConnection] = []
-		self.key_to_name: dict[int | tuple[int, int], str] = {}
-		self.name_to_key: dict[str, int | tuple[int, int]] = {}
+		self.key_to_name: dict[int, str] = {}
+		self.name_to_key: dict[str, int] = {}
 
 	def add_ws(self, ws: websockets.asyncio.client.ClientConnection) -> None:
 		self.listeners.append(ws)
@@ -95,7 +101,7 @@ class ConsoleListeners:
 		for ws in self.listeners:
 			asyncio.create_task(ws.send(message))
 
-	def create_console(self, ws_key: int | tuple[int, int], ws_name: str) -> None:
+	def create_console(self, ws_key: int, ws_name: str) -> None:
 		if ws_key in self.key_to_name.keys():
 			raise ValueError(f'ws_key [{ws_key}] already exists')
 		if ws_name in self.name_to_key.keys():
@@ -365,122 +371,6 @@ class CriticNN(torch.nn.Module):
 
 		return self.network(inputs).squeeze(-1)
 
-class MultiWorkerMultiAgentEnv:
-	def __init__(
-		self,
-		args: argparse.Namespace,
-		console_listeners: ConsoleListeners | None = None
-	) -> None:
-
-		self.args = args
-		self.console_listeners = console_listeners
-
-		self.actor = self.create_actor()
-		self.critic = self.create_critic()
-
-		self.workers: list[MultiAgentEnv] = []
-
-	def create_actor(self) -> torch.nn.ModuleDict:
-		return torch.nn.ModuleDict({
-			'SHOW': ActorNN('SHOW', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2),
-			'PLAY': ActorNN('PLAY', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2)
-		})
-
-	def create_critic(self) -> CriticNN:
-		return CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
-
-	def has_real_checkpoint(self) -> bool:
-		if self.args.model_dir is None or not os.path.isdir(self.args.model_dir):
-			return False
-		paths = glob.glob(os.path.join(self.args.model_dir, '*.pt'))
-		paths = [p for p in paths if os.path.basename(p) != 'latest_model.pt']
-		return len(paths) > 0
-
-	def create_worker(self, worker_id: int, attach_console: bool = False) -> MultiAgentEnv:
-		console_listeners = self.console_listeners if attach_console else None
-		worker = MultiAgentEnv(
-			args = self.args,
-			mode = MultiAgentEnv.ModelModes.train,
-			worker_id = worker_id,
-			actor = self.actor,
-			critic = self.critic,
-			console_listeners = console_listeners,
-		)
-
-		if self.args.n_workers > 1:
-			worker.timesteps_per_batch = worker.timesteps_per_batch // self.args.n_workers
-
-		return worker
-
-	def load_checkpoint(self, path: str) -> None:
-		checkpoint = torch.load(path, weights_only = False)
-
-		self.actor.load_state_dict(checkpoint['actor_state_dict'])
-		self.critic.load_state_dict(checkpoint['critic_state_dict'])
-		self._initial_batch_num = checkpoint['batch_num']
-		self._initial_training_history = checkpoint.get('training_history', {})
-		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self._initial_batch_num})')
-
-	async def train(self, url: str) -> None:
-		# Self Play
-		if self.args.n_workers == 1 or not self.has_real_checkpoint():
-			worker = self.create_worker(0, (self.console_listeners is not None))
-			self.workers = [worker]
-
-			if hasattr(self, '_initial_batch_num'):
-				worker.batch_num = self._initial_batch_num
-			if hasattr(self, '_initial_training_history'):
-				worker.training_history = self._initial_training_history
-
-			worker.timesteps_per_batch *= self.args.n_workers
-
-			try:
-				await worker.connect_and_handshake(url)
-
-				while self.args.n_workers == 1 or not self.has_real_checkpoint():
-					trajectories = await worker.rollout_one_batch()
-					await worker.train_post_rollout(trajectories)
-
-			finally:
-				await worker.disconnect()
-
-			self._initial_batch_num = worker.batch_num
-			self._initial_training_history = worker.training_history
-
-		# Parallel Training
-		if self.args.n_workers != 1:
-			self.workers = [self.create_worker(i, False) for i in range(self.args.n_workers)]
-
-			for worker in self.workers:
-				if hasattr(self, '_initial_batch_num'):
-					worker.batch_num = self._initial_batch_num
-				if hasattr(self, '_initial_training_history'):
-					worker.training_history = self._initial_training_history
-
-			try:
-				await asyncio.gather(*[worker.connect_and_handshake(url) for worker in self.workers])
-
-				while True:
-					trajectories = await asyncio.gather(*[worker.rollout_one_batch() for worker in self.workers])
-					merged_trajectories = self.merge_trajectories(trajectories)
-					await self.workers[0].train_post_rollout(merged_trajectories)
-
-					batch_num = self.workers[0].batch_num
-					training_history = self.workers[0].training_history
-					for worker in self.workers:
-						worker.batch_num = batch_num
-						worker.training_history = training_history
-
-			finally:
-				await asyncio.gather(*[worker.disconnect() for worker in self.workers], return_exceptions = True)
-
-	def merge_trajectories(self, trajectories: list[dict]) -> dict[str, list]:
-		merged_trajectories = {}
-		for worker_trajectories in trajectories:
-			for key in worker_trajectories.keys():
-				merged_trajectories.setdefault(key, []).extend(worker_trajectories[key])
-		return merged_trajectories
-
 class MultiAgentEnv:
 	serialize_state_order = {
 		'state': ('game_state', 'hand', 'scores', 'current_trick', 'collected_cards', 'exposed'),
@@ -495,22 +385,21 @@ class MultiAgentEnv:
 	def __init__(self,
 		args: argparse.Namespace | None = None,
 		mode: MultiAgentEnv.ModelModes | None = None,
-		worker_id: int = 0,
 		actor: torch.nn.ModuleDict | None = None,
 		critic: CriticNN | None = None,
 		console_listeners: ConsoleListeners | None = None
 	) -> None:
+
+		self.args = args if args is not None else argparse.Namespace()
 
 		self._init_hyperparameters()
 
 		if mode is None:
 			mode = MultiAgentEnv.ModelModes.train
 
-		self.args = args if args is not None else argparse.Namespace()
-		self.worker_id = worker_id
-		self.worker_id_width = max(1, len(str(self.args.n_workers - 1)))
 		self.console_listeners = console_listeners
 
+		self.num_envs: int =														getattr(self.args, 'n_workers', 1)
 		self.num_agents: int =														GAME_SETTINGS['NUM_PLAYERS']
 		self.ws_list: list[websockets.asyncio.client.ClientConnection | None] =		[None				for _ in range(self.num_agents)]
 
@@ -522,11 +411,7 @@ class MultiAgentEnv:
 		self._is_processing_event: list[bool] =										[False				for _ in range(self.num_agents)]
 		self._event_queue: list[list[tuple[str, float]]] =							[list()				for _ in range(self.num_agents)] # (message, timestamp)
 
-		self.handshake_events: list[asyncio.Event] =								[asyncio.Event()	for _ in range(self.num_agents)]
-		self.lobby_ready_event: asyncio.Event =										asyncio.Event()
-		self.rollout_complete_event: asyncio.Event =								asyncio.Event()
 		self.eval_game_complete_event: asyncio.Event =								asyncio.Event()
-		self.listen_tasks: list[asyncio.Task] =										[]
 
 		self.training_history: dict[str, list[int | float]] = {}
 
@@ -547,7 +432,7 @@ class MultiAgentEnv:
 		self.action_delay: float =					0.001
 
 	def _init_hyperparameters(self) -> None:
-		self.timesteps_per_batch: int =				2 ** 16
+		self.timesteps_per_batch: int =				getattr(self.args, 'timesteps_per_batch', 2 ** 16)
 		self.max_timesteps_per_episode: int =		200
 
 		self.reward_scale: float =					1.0 / 10
@@ -568,41 +453,38 @@ class MultiAgentEnv:
 	def reset(self) -> None:
 		num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
 
-		self.is_rollout: bool =											False
-		self.is_training: bool =										False
+		self.num_streams: int =											self.num_envs * self.num_agents
+
 		self.is_evaluating: bool =										False
 
 		self._turn_order: list[str | None] =							[None					for _ in range(self.num_agents)]
 
-		self._latest_observation: list[dict | None] =					[None					for _ in range(self.num_agents)]
-		self._latest_state: list[dict[str, np.ndarray] | None] =		[None					for _ in range(self.num_agents)]
-		self._latest_actions: list[list[dict[str, Any]]] =				[list()					for _ in range(self.num_agents)]
-		self._latest_reward: list[float | None] =						[None					for _ in range(self.num_agents)]
+		self._latest_observation: list[dict | None] =					[None					for _ in range(self.num_streams)]
+		self._latest_state: list[dict[str, np.ndarray] | None] =		[None					for _ in range(self.num_streams)]
+		self._latest_actions: list[list[dict[str, Any]]] =				[list()					for _ in range(self.num_streams)]
 
 		self._play_history: list[np.ndarray[np.int8]] =					[np.zeros((
 																			num_tricks,
 																			GAME_SETTINGS['NUM_PLAYERS'],
 																			GAME_SETTINGS['NUM_CARDS']
-																		), dtype = np.int8)		for _ in range(self.num_agents)]
+																		), dtype = np.int8)		for _ in range(self.num_streams)]
 		self._leader_history: list[np.ndarray[np.int8]] =				[np.zeros((
 																			num_tricks,
 																			GAME_SETTINGS['NUM_PLAYERS']
-																		), dtype = np.int8)		for _ in range(self.num_agents)]
+																		), dtype = np.int8)		for _ in range(self.num_streams)]
 
-		self._opponent_actors: list[torch.nn.ModuleDict | None] =		[None					for _ in range(self.num_agents)]
+		self._opponent_actors: list[torch.nn.ModuleDict | None] =		[None					for _ in range(self.num_streams)]
 
-		self._batch_size: int =											self.timesteps_per_batch // self.num_agents
 
-		self._batch_ts: list[int] =										[-1						for _ in range(self.num_agents)]
-		self._batch_states: list[list[dict[str, torch.Tensor]]] =		[list()					for _ in range(self.num_agents)]	# (B, dim(obs))
-		self._batch_actions: list[list[torch.Tensor]] =					[list()					for _ in range(self.num_agents)]	# (B, dim(act))
-		self._batch_action_masks: list[list[torch.Tensor]] =			[list()					for _ in range(self.num_agents)]	# (B, dim(act))
-		self._batch_log_probs: list[list[torch.Tensor]] =				[list()					for _ in range(self.num_agents)]	# (B,)
-		self._batch_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_agents)]	# (E, t_per_E)
-		self._batch_lens: list[list[np.ndarray]] =						[list()					for _ in range(self.num_agents)]	# (E,)
+		self._batch_states: list[list[dict[str, torch.Tensor]]] =		[list()					for _ in range(self.num_streams)]	# (B, dim(obs))
+		self._batch_actions: list[list[torch.Tensor]] =					[list()					for _ in range(self.num_streams)]	# (B, dim(act))
+		self._batch_action_masks: list[list[torch.Tensor]] =			[list()					for _ in range(self.num_streams)]	# (B, dim(act))
+		self._batch_log_probs: list[list[torch.Tensor]] =				[list()					for _ in range(self.num_streams)]	# (B,)
+		self._batch_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_streams)]	# (E, t_per_E)
+		self._batch_lens: list[list[np.ndarray]] =						[list()					for _ in range(self.num_streams)]	# (E,)
 
-		self._episode_ts: list[int] =									[-1						for _ in range(self.num_agents)]
-		self._episode_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_agents)]	# (t_per_E,)
+		self._episode_ts: list[int] =									[-1						for _ in range(self.num_streams)]
+		self._episode_rewards: list[list[np.ndarray]] =					[list()					for _ in range(self.num_streams)]	# (t_per_E,)
 
 		self.eval_actors: list[torch.nn.ModuleDict | None] =			[None					for _ in range(self.num_agents)]
 		self.eval_model_paths: list[str | None] =						[None					for _ in range(self.num_agents)]
@@ -611,7 +493,7 @@ class MultiAgentEnv:
 
 		self._rollout_progressbar: tqdm | None =						None
 
-	def reset_game_state(self, ws_idx = int) -> None:
+	def reset_game_state(self, ws_idx: int) -> None:
 		num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
 
 		self._play_history[ws_idx] =			np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8)
@@ -697,67 +579,56 @@ class MultiAgentEnv:
 
 		return weights
 
+	def learner_seat(self, env_idx: int) -> int:
+		return env_idx % self.num_agents
+
 	def load_opponent_models(self) -> None:
+		self._opponent_actors = [None for _ in range(self.num_streams)]
+
 		model_paths = self.get_models_in_directory(self.args.model_dir)
 		model_paths = [path for path in model_paths if os.path.basename(path) != 'latest_model.pt']
 
 		if len(model_paths) == 0:
-			for ws_idx in range(1, self.num_agents):
-				self._opponent_actors[ws_idx] = None
 			return
 
-		else:
-			log_path = None
-			if self.args.model_dir is not None:
-				os.makedirs(self.args.model_dir, exist_ok = True)
-				log_path = os.path.join(self.args.model_dir, self.args.log_file)
+		log_path = None
+		if self.args.model_dir is not None:
+			os.makedirs(self.args.model_dir, exist_ok = True)
+			log_path = os.path.join(self.args.model_dir, self.args.log_file)
 
-			if self.args.opponent_sampling == 'latest':
-				weights = np.zeros(len(model_paths))
-				weights[-1] = 1
-			elif self.args.opponent_sampling == 'mixed':
-				weights = self.get_opponent_sampling_weights(model_paths)
+		if self.args.opponent_sampling == 'latest':
+			weights = np.zeros(len(model_paths))
+			weights[-1] = 1
+		elif self.args.opponent_sampling == 'mixed':
+			weights = self.get_opponent_sampling_weights(model_paths)
 
-			log_lines = []
-			for ws_idx in range(1, self.num_agents):
+		actor_cache: dict[str, torch.nn.ModuleDict] = {}
+		selected_counts: dict[str, int] = {}
+		for env_idx in range(self.num_envs):
+			learner = self.learner_seat(env_idx)
+			for seat in range(self.num_agents):
+				stream = env_idx * self.num_agents + seat
+				if seat == learner:
+					self._opponent_actors[stream] = None
+					continue
 				path = np.random.choice(model_paths, p = weights)
-				log_lines.append(f'[w{self.worker_id:0{self.worker_id_width}d}] Selected model [{path}] as opponent')
-				self._opponent_actors[ws_idx] = self.load_actor_from_checkpoint(path)
+				if path not in actor_cache:
+					actor_cache[path] = self.load_actor_from_checkpoint(path)
+				self._opponent_actors[stream] = actor_cache[path]
+				selected_counts[path] = selected_counts.get(path, 0) + 1
 
-			if log_path is not None:
-				with open(log_path, 'a') as f:
-					f.writelines(line + '\n' for line in log_lines)
+		log_lines = [f'Selected model [{path}] as opponent (x{count})' for path, count in selected_counts.items()]
 
-			else:
-				for line in log_lines:
-					print(line)
+		if log_path is not None:
+			with open(log_path, 'a') as f:
+				f.writelines(line + '\n' for line in log_lines)
+
+		else:
+			for line in log_lines:
+				print(line)
 
 	async def connect(self, url: str) -> None:
-		if self.mode == MultiAgentEnv.ModelModes.train:
-			raise RuntimeError(
-				'MutliAgentEnv.connect() should not be called in train mode; use MultiWorkerMultiAgentEnv instead'
-			)
-
-			# await self.connect_and_handshake(url)
-
-			# if hasattr(self.args, 'spectate') and self.args.spectate:
-			# 	self.is_waiting_for_spectator = True
-			# 	loop = asyncio.get_running_loop()
-			# 	await loop.run_in_executor(None, lambda: input('Join as spectator now, [Enter] to continue...'))
-			# 	self.is_waiting_for_spectator = False
-
-			# try:
-			# 	while True:
-			# 		trajectories = await self.rollout_one_batch()
-			# 		await self.train_post_rollout(trajectories = trajectories)
-			# 		self.batch_num += 1
-			# 		if self.batch_num % self.save_checkpoint_frequency == 0:
-			# 			self.save_checkpoint()
-			# 		self.save_checkpoint(file_name = 'latest_model.pt')
-			# finally:
-			# 	await self.disconnect()
-
-		elif self.mode == MultiAgentEnv.ModelModes.infer:
+		if self.mode == MultiAgentEnv.ModelModes.infer:
 			self.actor.eval()
 
 			# Only One Agent
@@ -804,102 +675,174 @@ class MultiAgentEnv:
 			eval_task = asyncio.create_task(launch_eval())
 			await asyncio.gather(*tasks, eval_task)
 
-	async def connect_and_handshake(self, url: str) -> None:
-		for event in self.handshake_events:
-			event.clear()
+	def get_observation(self, env: gong_zhu.Env, env_idx: int, seat: int) -> None:
+		stream = env_idx * self.num_agents + seat
 
-		async def connect_ws(ws_idx: int) -> None:
-			async with connect(url, ping_interval = None, ping_timeout = None) as ws:
-				self.ws_list[ws_idx] = ws
+		prev_state = self._latest_state[stream]
+		prev_observation = self._latest_observation[stream]
 
-				if self.console_listeners is not None:
-					console_name = f'agent_w{self.worker_id:0{self.worker_id_width}d}_a{ws_idx}'
-					console_key = (self.worker_id, ws_idx)
-					self.console_listeners.create_console(console_key, console_name)
+		observation = env.raw_state(seat)
+		self.update_latest_from_gui_observation(observation, stream, seat)
 
-				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
-				await self._listen(ws_idx)
+		prev_frame = prev_observation['currentFrame'] if prev_observation is not None else None
+		if prev_frame is not None and prev_frame == observation['currentFrame']:
+			return
 
-		self.listen_tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
-		await asyncio.gather(*[event.wait() for event in self.handshake_events])
+		if prev_state is not None and len(self._episode_rewards[stream]) > 0:
+			reward = self.get_reward_from_state_transition(prev_state, self._latest_state[stream], seat)
+			self._episode_rewards[stream][-1] += reward
 
-	async def disconnect(self) -> None:
-		await self.exit_lobby()
+	def action_to_commands(self, action: torch.Tensor, observation: dict, seat: int) -> list[str]:
+		commands: list[str] = []
+		game_state = observation['gameState']
 
-		for task in self.listen_tasks:
-			task.cancel()
-		if len(self.listen_tasks):
-			await asyncio.gather(*self.listen_tasks, return_exceptions = True)
+		if game_state.startswith('SHOW') or game_state.startswith('PLAY'):
+			cards_to_play = torch.nonzero(action, as_tuple = True)[0].tolist()
+			cards_to_play_idxs = np.where(np.isin(observation['hands'][seat][0], cards_to_play))[0].tolist()
+			if game_state.startswith('PLAY') or torch.sum(action).item() != 0:
+				commands.append('PLAY ' + ' '.join(str(e) for e in cards_to_play_idxs))
+			if game_state.startswith('SHOW'):
+				commands.append('PASS')
 
-		self.listen_tasks = []
+		return commands
 
-	async def rollout_one_batch(self) -> dict[str, list]:
+	async def train(self) -> None:
+		gc.collect()
+		gc.freeze()
+		gc.disable()
+
+		while True:
+			trajectories = self.rollout_one_batch()
+			await self.train_post_rollout(trajectories)
+
+	def rollout_one_batch(self) -> dict[str, list]:
+		if gong_zhu is None:
+			raise RuntimeError('Native module unavailable; build/install it (from cards import gong_zhu)')
+
 		self.reset()
 		self.load_opponent_models()
-
-		num_agents_training = sum(1 for actor in self._opponent_actors if actor is None)
-		self._batch_size = self.timesteps_per_batch // num_agents_training
-
-		self._batch_ts = [0 for _ in range(self.num_agents)]
-		self._episode_ts = [0 for _ in range(self.num_agents)]
-		self.is_rollout = True
-		self.rollout_complete_event.clear()
-		self.lobby_ready_event.clear()
-
-		self._rollout_progressbar = tqdm(
-			range(self._batch_size * num_agents_training),
-			dynamic_ncols = True,
-			desc = f'[w{self.worker_id:0{self.worker_id_width}d}] Batch {self.batch_num} Rollout',
-			position = self.worker_id
-		)
-		self._rollout_progressbar.n = 0
-		self._rollout_progressbar.refresh()
-
-		if hasattr(self.ws_list[0], '_settings_sent'):
-			delattr(self.ws_list[0], '_settings_sent')
-
 		self.actor.train()
 		self.critic.train()
 
-		await self.create_lobby()
+		self._turn_order = [str(seat) for seat in range(self.num_agents)]
 
-		await self.rollout_complete_event.wait()
+		envs = [
+			gong_zhu.Env({'expose3': True, 'zhu_yang_man_juan': True, 'num_players': self.num_agents})
+			for _ in range(self.num_envs)
+		]
 
-		self.is_rollout = False
+		self._rollout_progressbar = tqdm(
+			range(self.timesteps_per_batch),
+			dynamic_ncols = True,
+			desc = f'Batch {self.batch_num} Rollout (x{self.num_envs})'
+		)
+
+		for env_idx, env in enumerate(envs):
+			env.reset(random.getrandbits(32))
+			for seat in range(self.num_agents):
+				self.get_observation(env, env_idx, seat)
+			self.deal_round(env, env_idx, fresh_game = False)
+
+		total_training = 0
+		while total_training < self.timesteps_per_batch:
+			pending = self.collect_pending_actions(envs)
+			if not pending:
+				break
+
+			total_training += self.forward_and_act(pending)
+
+			for env_idx, env in enumerate(envs):
+				for seat in range(self.num_agents):
+					self.get_observation(env, env_idx, seat)
+
+			self._rollout_progressbar.n = min(total_training, self.timesteps_per_batch)
+			self._rollout_progressbar.refresh()
+
+		for stream in range(self.num_streams):
+			self.end_episode(stream)
+
 		if self._rollout_progressbar is not None:
 			self._rollout_progressbar.close()
 
-		await self.exit_lobby()
-
 		return self.get_trajectories()
 
-	async def create_lobby(self) -> None:
-		await self.ws_list[0].send(json.dumps({
-			'tag': 'createLobby',
-			'data': {
-				'name':		f'training_w{self.worker_id}',
-				'time':		int(time.time() * 1000),
-				'creator':	self.ws_list[0].username,
-				'host':		self.ws_list[0].username
-			},
-			'timestamp': int(time.time() * 1000)
-		}))
+	def deal_round(self, env: gong_zhu.Env, env_idx: int, fresh_game: bool) -> None:
+		for seat in range(self.num_agents):
+			self.reset_game_state(env_idx * self.num_agents + seat)
 
-	async def exit_lobby(self) -> None:
-		for ws_idx in range(self.num_agents):
-			ws = self.ws_list[ws_idx]
-			if ws is None:
+		if fresh_game:
+			env.reset(random.getrandbits(32))
+			for seat in range(self.num_agents):
+				self.get_observation(env, env_idx, seat)
+
+		env.apply_command(0, 'DEAL')
+		for seat in range(self.num_agents):
+			self.get_observation(env, env_idx, seat)
+
+	def collect_pending_actions(self, envs: list) -> list[tuple[int, Any, int, str]]:
+		pending: list[tuple[int, Any, int, str]] = []
+
+		for env_idx, env in enumerate(envs):
+			game_state = env.game_state()
+
+			if game_state in {'SCORE', 'LEADERBOARD'}:
+				for seat in range(self.num_agents):
+					self.end_episode(env_idx * self.num_agents + seat)
+				self.deal_round(env, env_idx, fresh_game = (game_state == 'LEADERBOARD'))
+				game_state = env.game_state()
+
+			seat = env.current_seat()
+			if seat < 0:
 				continue
-			try:
-				await ws.send(json.dumps({
-					'tag': 'leaveLobby',
-					'timestamp': int(time.time() * 1000)
-				}))
-			except Exception as e:
-				warnings.warn(f'[w{self.worker_id:0{self.worker_id_width}d}] Failed to leave lobby for ws_idx [{ws_idx}]: {e}')
+
+			module_type = ActorNN.get_module_type_from_game_state(game_state)
+			if module_type == '':
+				continue
+
+			pending.append((env_idx * self.num_agents + seat, env, seat, module_type))
+
+		return pending
+
+	def forward_and_act(self, pending: list[tuple[int, Any, int, str]]) -> int:
+		# Group decisions by (actor identity, module type) -> one batched forward each.
+		groups: dict[tuple[int, str], list] = {}
+		for stream, env, seat, module_type in pending:
+			actor = self.actor if self._opponent_actors[stream] is None else self._opponent_actors[stream]
+			groups.setdefault((id(actor), module_type), []).append((stream, env, seat, module_type))
+
+		recorded = 0
+		for (_actor_id, module_type), items in groups.items():
+			first_stream = items[0][0]
+			actor = self.actor if self._opponent_actors[first_stream] is None else self._opponent_actors[first_stream]
+
+			states = [self._latest_state[stream] for stream, env, seat, mt in items]
+			inputs = {k: torch.tensor(np.stack([state[k] for state in states]), dtype = torch.float32) for k in states[0]}
+			masks = torch.tensor(np.stack([actor[module_type].calculate_action_mask(state) for state in states]))
+
+			with torch.no_grad():
+				actions, log_probs = actor[module_type](inputs, masks)
+
+			for i, (stream, env, seat, mt) in enumerate(items):
+				if self._opponent_actors[stream] is None:
+					if self._episode_ts[stream] < 0 or self._episode_ts[stream] >= self.max_timesteps_per_episode:
+						self._episode_rewards[stream].clear()
+						self._episode_ts[stream] = 0
+
+					self._batch_states[stream].append({k: inputs[k][i] for k in inputs})
+					self._batch_actions[stream].append(actions[i])
+					self._batch_action_masks[stream].append(masks[i])
+					self._batch_log_probs[stream].append(log_probs[i])
+					self._episode_rewards[stream].append(np.array([0.0]))
+					self._episode_ts[stream] += 1
+					recorded += 1
+
+				for command in self.action_to_commands(actions[i], self._latest_observation[stream], seat):
+					env.apply_command(seat, command)
+
+		return recorded
 
 	def get_trajectories(self) -> dict[str, list]:
-		training_idxs = [i for i in range(self.num_agents) if self._opponent_actors[i] is None]
+		training_idxs = [i for i in range(self.num_streams) if self._opponent_actors[i] is None]
 
 		return {
 			'states':		[self._batch_states[i]			for i in training_idxs],
@@ -927,8 +870,7 @@ class MultiAgentEnv:
 	def _broadcast_console(self, ws_idx: int, message: dict) -> None:
 		if self.console_listeners is None:
 			return
-		console_key = (self.worker_id, ws_idx) if self.mode == MultiAgentEnv.ModelModes.train else ws_idx
-		message['data']['id'] = self.console_listeners.key_to_name.get(console_key, f'agent_{ws_idx}')
+		message['data']['id'] = self.console_listeners.key_to_name.get(ws_idx, f'agent_{ws_idx}')
 		self.console_listeners.broadcast_message(json.dumps(message))
 
 	async def _listen(self, ws_idx: int) -> None:
@@ -939,11 +881,6 @@ class MultiAgentEnv:
 				continue
 			else:
 				await self._handle_message(ws_idx, message)
-
-	async def _process_messages(self, ws_idx: int) -> None:
-		while True:
-			message = await self._message_queue[ws_idx].get()
-			await self._handle_message(ws_idx, message)
 
 	async def _handle_message(self, ws_idx: int, message: str) -> None:
 		ws = self.ws_list[ws_idx]
@@ -964,10 +901,7 @@ class MultiAgentEnv:
 		elif msg['tag'] == 'receiveUsername':
 			ws.username = msg['data']
 
-			if self.mode == MultiAgentEnv.ModelModes.train:
-				self.handshake_events[ws_idx].set()
-
-			elif self.mode == MultiAgentEnv.ModelModes.infer:
+			if self.mode == MultiAgentEnv.ModelModes.infer:
 				if ws_idx == 0:
 					await ws.send(json.dumps({
 						'tag': 'getLobbies',
@@ -988,21 +922,7 @@ class MultiAgentEnv:
 					}))
 
 		elif msg['tag'] == 'createdLobby':
-			if self.mode == MultiAgentEnv.ModelModes.train:
-				if not msg.get('status', 1):
-					await asyncio.sleep(self.action_delay)
-					await self.create_lobby()
-					return
-
-				for other_ws_idx in range(1, self.num_agents):
-					other_ws = self.ws_list[other_ws_idx]
-					await other_ws.send(json.dumps({
-						'tag': 'joinLobby',
-						'data': msg['data'],
-						'timestamp': int(time.time() * 1000)
-					}))
-
-			elif self.mode == MultiAgentEnv.ModelModes.eval:
+			if self.mode == MultiAgentEnv.ModelModes.eval:
 				await ws.send(json.dumps({
 					'tag': 'joinLobby',
 					'data': msg['data'],
@@ -1012,38 +932,7 @@ class MultiAgentEnv:
 		elif msg['tag'] == 'showLobby':
 			self.reset_game_state(ws_idx)
 
-			if self.mode == MultiAgentEnv.ModelModes.train:
-				if ws_idx == 0:
-					if not self.lobby_ready_event.is_set() and not hasattr(ws, '_settings_sent'):
-						settings = copy.deepcopy(msg['data']['gameData']['settings'])
-						settings['spectatorPolicy'] = 'constant'
-						settings['expose3'] = True
-						settings['zhuYangManJuan'] = True
-						await ws.send(json.dumps({
-							'tag': 'updateLobbySettings',
-							'data': {'settings': settings},
-							'timestamp': int(time.time() * 1000)
-						}))
-						ws._settings_sent = True
-
-						self.update_environment_from_message(msg)
-
-						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
-						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
-						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
-
-					connected_count = len(msg['data'].get('connected', []))
-					if connected_count == GAME_SETTINGS['NUM_PLAYERS'] and self.is_rollout and not self.lobby_ready_event.is_set():
-						self.lobby_ready_event.set()
-
-						self.update_environment_from_message(msg)
-
-						await ws.send(json.dumps({
-							'tag': 'startGame',
-							'timestamp': int(time.time() * 1000)
-						}))
-
-			elif self.mode == MultiAgentEnv.ModelModes.infer:
+			if self.mode == MultiAgentEnv.ModelModes.infer:
 				if not hasattr(ws, 'connected'):
 					ws.connected = True
 
@@ -1121,198 +1010,7 @@ class MultiAgentEnv:
 					}))
 
 		elif msg['tag'] == 'updateGUI':
-			if self.mode == MultiAgentEnv.ModelModes.train:
-				# No Longer Collecting Data
-				if not self.is_rollout:
-					await self.unlock_processing_event(ws_idx)
-					return
-
-				self.update_environment_from_message(msg)
-
-				turn_idx = self._turn_order.index(ws.username)
-				current_frame = msg['data']['gameData']['currentFrame']
-
-				# Update Internals From Message
-				prev_state = copy.deepcopy(self._latest_state[ws_idx])
-				prev_observation = copy.deepcopy(self._latest_observation[ws_idx])
-				self.update_latest_from_gui_observation(msg['data']['gameData'], ws_idx, turn_idx)
-
-				self.cleanup_acknowledged_actions(ws_idx, current_frame)
-				found_matching_command = self.acknowledged_previous_command(ws_idx, current_frame)
-
-				# Nothing Happened -> Return
-				prev_frame = prev_observation['currentFrame'] if prev_observation is not None else None
-				new_frame = self._latest_observation[ws_idx]['currentFrame']
-				if prev_frame is not None and prev_frame == new_frame:
-					await self.unlock_processing_event(ws_idx)
-					return
-
-				# Reward Calculation
-				if prev_state is not None and len(self._episode_rewards[ws_idx]) > 0:
-					reward = self.get_reward_from_state_transition(prev_state, self._latest_state[ws_idx], turn_idx)
-
-					self._episode_rewards[ws_idx][-1] += reward
-
-					self._broadcast_console(ws_idx, {
-						'tag': 'receiveCommand',
-						'data': {
-							'msg': ['=== reward ===\n' + f'Transition Reward [{reward}]\nCumulative Reward [{self._episode_rewards[ws_idx][-1]}]'],
-							'status': 1
-						}
-					})
-
-				# Episode Completion + Reset
-				game_state = self._latest_observation[ws_idx]['gameState']
-				done = game_state in {'LEADERBOARD', 'SCORE'}
-
-				if (done or (self._episode_ts[ws_idx] >= self.max_timesteps_per_episode)) and self._episode_ts[ws_idx] > 0:
-					self.end_episode(ws_idx)
-
-				if done:
-					if ws_idx == 0 and self.is_rollout:
-						num_tricks = math.ceil(GAME_SETTINGS['NUM_CARDS'] / GAME_SETTINGS['NUM_PLAYERS'])
-						self._play_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS'], GAME_SETTINGS['NUM_CARDS']), dtype = np.int8) for _ in range(self.num_agents)]
-						self._leader_history =	[np.zeros((num_tricks, GAME_SETTINGS['NUM_PLAYERS']), dtype = np.int8) for _ in range(self.num_agents)]
-
-						total_timesteps = sum(self._batch_ts)
-						num_training = sum(1 for a in self._opponent_actors if a is None)
-						target_timesteps = self.timesteps_per_batch * num_training
-
-						total_episodes = sum(len(rewards) for rewards in self._batch_rewards)
-						ongoing_episodes = sum(1 for ts in self._episode_ts if ts > 0)
-
-						agent_stats = ' | '.join([
-						f'A{i}:{self._batch_ts[i]}ts/{len(self._batch_rewards[i])}ep'
-							for i in range(self.num_agents)
-						])
-
-						status_msg = (
-							f'Progress: {total_timesteps}/{target_timesteps} | '
-							f'{total_episodes}+{ongoing_episodes} episodes'
-						)
-						detail_msg = f'{agent_stats}'
-
-						await ws.send(json.dumps({
-							'tag': 'sendChat',
-							'data': status_msg,
-							'timestamp': int(time.time() * 1000),
-						}));
-
-						await ws.send(json.dumps({
-							'tag': 'sendChat',
-							'data': detail_msg,
-							'timestamp': int(time.time() * 1000),
-						}));
-
-						self._rollout_progressbar.n = sum(batch_ts for ws_idx, batch_ts in enumerate(self._batch_ts) if self._opponent_actors[ws_idx] is None)
-						self._rollout_progressbar.refresh()
-
-						await ws.send(json.dumps({
-							'tag': 'sendCommand',
-							'data': 'DEAL',
-							'timestamp': int(time.time() * 1000),
-							'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-						}))
-					await self.unlock_processing_event(ws_idx)
-					return
-
-				self._broadcast_console(ws_idx, {
-					'tag': 'receiveCommand',
-					'data': {
-						'msg': [f'=== self._latest_observation[ws_idx] ===\n' + json.dumps(self._latest_observation[ws_idx])],
-						'status': 0
-					}
-				})
-				self._broadcast_console(ws_idx, {
-					'tag': 'receiveCommand',
-					'data': {
-						'msg': [f'gameState: {self._latest_observation[ws_idx]["gameState"]} | needToAct: {self._latest_observation[ws_idx]["needToAct"][turn_idx]}'],
-						'status': 1
-					}
-				})
-
-				# Needs to Act -> Make Action
-				if self._latest_observation[ws_idx]['needToAct'][turn_idx] == 1:
-					self._broadcast_console(ws_idx, {
-						'tag': 'receiveCommand',
-						'data': {
-							'msg': [f'NEED TO ACT -- batch {self._batch_ts[ws_idx]}/{self.timesteps_per_batch} | episode {self._episode_ts[ws_idx]}/{self.max_timesteps_per_episode}'],
-							'status': 0
-						}
-					})
-					self._broadcast_console(ws_idx, {
-						'tag': 'receiveCommand',
-						'data': {
-							'msg': [f'=== self._latest_state[ws_idx] ===\n' + json.dumps({k: v.tolist() if type(v) == np.ndarray else v for k, v in self._latest_state[ws_idx].items()})],
-							'status': 1
-						}
-					})
-
-					if self._batch_ts[ws_idx] >= 0 and (self._opponent_actors[ws_idx] is not None or self._batch_ts[ws_idx] < self._batch_size):
-
-						if self._episode_ts[ws_idx] < 0:
-							self._episode_rewards[ws_idx].clear()
-							self._episode_ts[ws_idx] = 0
-
-						elif self._episode_ts[ws_idx] >= self.max_timesteps_per_episode:
-							self._episode_rewards[ws_idx].clear()
-							self._episode_ts[ws_idx] = 0
-
-							# Episode Complete
-							await ws.send(json.dumps({
-								'tag': 'sendCommand',
-								'data': 'EXIT',
-								'timestamp': int(time.time() * 1000),
-								'currentFrame': {'$bigint': str(self._latest_observation[ws_idx]['currentFrame'] if self._latest_observation[ws_idx] is not None else -1)}
-							}))
-							await self.unlock_processing_event(ws_idx)
-							return
-
-						# Skip Action if Waiting for ACK
-						if self.is_waiting_for_ack(ws_idx, current_frame):
-							await self.unlock_processing_event(ws_idx)
-							return
-
-						# Batch Full
-						if self._opponent_actors[ws_idx] is None and self._batch_ts[ws_idx] + 1 >= self._batch_size:
-							self.is_rollout = False
-							for _ws_idx in range(self.num_agents):
-								self.end_episode(_ws_idx)
-							self.rollout_complete_event.set()
-
-							await self.unlock_processing_event(ws_idx)
-							return
-
-						with torch.no_grad():
-							actor_module_type = ActorNN.get_module_type_from_game_state(self._latest_observation[ws_idx]['gameState'])
-
-							if actor_module_type == '':
-								await self.unlock_processing_event(ws_idx)
-								return
-
-							actions, log_probs, inputs, mask = self.get_action(ws_idx, actor_module_type, self._opponent_actors[ws_idx])
-
-							self._broadcast_console(ws_idx, {
-								'tag': 'receiveCommand',
-								'data': {
-									'msg': [f'=== actions | log_probs ({self._latest_observation[ws_idx]["gameState"]}) ===\n' + json.dumps(actions.tolist()) + '\n' + json.dumps(log_probs.tolist())],
-									'status': 1
-								}
-							})
-
-							self._batch_states[ws_idx].append({k: v.squeeze(0) for k, v in inputs.items()})
-							self._batch_actions[ws_idx].append(actions.squeeze(0))
-							self._batch_action_masks[ws_idx].append(mask.squeeze(0))
-							self._batch_log_probs[ws_idx].append(log_probs.squeeze(0))
-							self._episode_rewards[ws_idx].append(np.array([0.0]))
-
-						self._batch_ts[ws_idx] += 1
-						self._episode_ts[ws_idx] += 1
-
-						await asyncio.sleep(self.action_delay)
-						await self.act(actions[0], ws_idx, turn_idx)
-
-			elif self.mode == MultiAgentEnv.ModelModes.infer:
+			if self.mode == MultiAgentEnv.ModelModes.infer:
 				self.update_environment_from_message(msg)
 
 				# Spectator or Not In Game
@@ -1456,20 +1154,6 @@ class MultiAgentEnv:
 			try:
 				found_idx = next(i for i, e in enumerate(self._latest_actions[ws_idx]) if e['command'] == msg['data']['command'] and e['oldFrame'] == msg['data']['oldFrame'])
 				self._latest_actions[ws_idx].pop(found_idx)
-
-				if self.mode == MultiAgentEnv.ModelModes.train:
-					# Rollback rejected command
-					if len(self._batch_states[ws_idx]) > 0:
-						self._batch_states[ws_idx] = self._batch_states[ws_idx][:-1]
-						self._batch_actions[ws_idx] = self._batch_actions[ws_idx][:-1]
-						self._batch_action_masks[ws_idx] = self._batch_action_masks[ws_idx][:-1]
-						self._batch_log_probs[ws_idx] = self._batch_log_probs[ws_idx][:-1]
-
-						if len(self._episode_rewards[ws_idx]) > 0:
-							self._episode_rewards[ws_idx] = self._episode_rewards[ws_idx][:-1]
-
-						self._batch_ts[ws_idx] -= 1
-						self._episode_ts[ws_idx] -= 1
 
 			except StopIteration:
 				pass
@@ -1941,6 +1625,8 @@ class MultiAgentEnv:
 			self.save_checkpoint()
 		self.save_checkpoint('latest_model.pt')
 
+		gc.collect()
+
 		# with torch.no_grad():
 		# 	sample_idx = torch.randperm(batch_len)[:20]
 		# 	sample_states = MultiAgentEnv.get_masked_states(batch_states, sample_idx)
@@ -2018,27 +1704,6 @@ class MultiAgentEnv:
 			return torch.zeros(0), torch.zeros(0)
 
 		return torch.tensor(np.concatenate(all_advantages, axis = 0)), torch.tensor(np.concatenate(all_returns, axis = 0))
-
-	def compute_reward_to_gos(self) -> torch.Tensor:
-		all_reward_to_gos = []
-
-		for ws_idx in range(self.num_agents):
-			batch_rewards = self._batch_rewards[ws_idx]
-			batch_reward_to_gos = []
-
-			for episode_rewards in batch_rewards:
-				discounted_reward = 0
-				episode_reward_to_gos = []
-
-				for reward in reversed(episode_rewards):
-					discounted_reward = reward + discounted_reward * self.gamma
-					episode_reward_to_gos.append(discounted_reward)
-
-				batch_reward_to_gos.extend(reversed(episode_reward_to_gos))
-
-			all_reward_to_gos.append(batch_reward_to_gos)
-
-		return torch.tensor(np.concatenate(all_reward_to_gos, axis = 0))
 
 	def get_models_in_directory(self, model_dir: str) -> list[str]:
 		model_dir = os.path.abspath(model_dir)
@@ -2316,34 +1981,24 @@ class EloRatingSystem:
 
 		return sorted(leaderboard, key = lambda x: x[1], reverse = True)
 
-async def console_server_handler(ws, console_listeners: ConsoleListener, env: MultiAgentEnv | MultiWorkerMultiAgentEnv) -> None:
+async def console_server_handler(ws, console_listeners: ConsoleListener, env: MultiAgentEnv) -> None:
 	try:
 		console_listeners.add_ws(ws)
 		async for message in ws:
 			msg = json.loads(message)
 			# print(msg)
 			if msg['tag'] == 'sendCommand':
-				ws_key = console_listeners.name_to_key[msg['id']]
-				if isinstance(ws_key, tuple):
-					worker_id, ws_idx = ws_key
-				else:
-					ws_idx = ws_key
+				ws_idx = console_listeners.name_to_key[msg['id']]
 
 				try:
 					data = json.loads(msg['data'])
 					assert type(data) == dict
 					data['timestamp'] = int(time.time() * 1000)
-					if isinstance(env, MultiAgentEnv):
-						await env.ws_list[ws_idx].send(json.dumps(data))
-					elif isinstance(env, MultiWorkerMultiAgentEnv) and len(env.workers) > 0:
-						await env.workers[0].ws_list[ws_idx].send(json.dumps(data))
+					await env.ws_list[ws_idx].send(json.dumps(data))
 				except:
 					print(f'Invalid JSON string {msg["data"]}')
 			if msg['tag'] == 'reset':
-				if isinstance(env, MultiAgentEnv):
-					env.reset()
-				elif isinstance(env, MultiWorkerMultiAgentEnv) and len(env.workers) > 0:
-					env.workers[0].reset()
+				env.reset()
 
 		await ws.wait_closed()
 	finally:
@@ -2374,7 +2029,15 @@ def parse_arguments() -> argparse.Namespace:
 	# Training Options
 	parser.add_argument(
 		'--n-workers', '-n', type = int, default = 1,
-		help = 'Number of parallel rollout workers'
+		help = 'Number of parallel in-process envs to batch across during rollout'
+	)
+	parser.add_argument(
+		'--timesteps-per-batch', '-t', type = int, default = 2 ** 16,
+		help = 'Rollout batch size'
+	)
+	parser.add_argument(
+		'--seed', type = int, default = None,
+		help = 'Seed random/numpy/torch (+ native deals) for reproducible runs'
 	)
 	parser.add_argument(
 		'--console-server-url', type = str,
@@ -2427,10 +2090,6 @@ def parse_arguments() -> argparse.Namespace:
 	if args.train:
 		if args.n_workers < 1:
 			parser.error(f'--n-workers must be >= 1 (got {args.n_workers})')
-		if args.n_workers > 1 and args.console_server_url is not None:
-			parser.error('--console-server-url is only supported with --n-workers=1')
-		if args.n_workers > 1 and args.spectate:
-			parser.error('--spectate is only supported with --n-workers=1')
 
 	if args.infer:
 		if args.model is None:
@@ -2467,13 +2126,22 @@ def crash_on_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
 async def main() -> None:
 	args: argparse.Namespace = parse_arguments()
 
+	if args.seed is not None:
+		random.seed(args.seed)
+		np.random.seed(args.seed)
+		torch.manual_seed(args.seed)
+
 	loop = asyncio.get_running_loop()
 	loop.set_exception_handler(crash_on_exception)
 
 	console_listeners = ConsoleListeners() if args.console_server_url is not None else None
 
 	if args.train:
-		env = MultiWorkerMultiAgentEnv(args, console_listeners)
+		env = MultiAgentEnv(
+			args = args,
+			mode = MultiAgentEnv.ModelModes.train,
+			console_listeners = console_listeners
+		)
 
 		if args.model is not None:
 			if os.path.exists(args.model):
@@ -2492,7 +2160,7 @@ async def main() -> None:
 			input('Console server started, [Enter] to continue...')
 
 		print('Starting training mode...')
-		await env.train(args.url)
+		await env.train()
 
 	elif args.infer or args.eval:
 		env = MultiAgentEnv(
