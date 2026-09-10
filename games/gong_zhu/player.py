@@ -189,7 +189,7 @@ class ActorNN(torch.nn.Module):
 		logits = self.network(inputs)
 
 		if self.module_type == 'SHOW':
-			masked_logits = logits.masked_fill(mask == 0, torch.tensor(-torch.inf))
+			masked_logits = logits.masked_fill(mask == 0, float('-inf'))
 			probs = torch.sigmoid(masked_logits)
 			if self.training:
 				actions = torch.bernoulli(probs)
@@ -201,7 +201,7 @@ class ActorNN(torch.nn.Module):
 			log_probs = log_probs_bits.sum(dim = -1)
 
 		elif self.module_type == 'PLAY':
-			masked_logits = logits.masked_fill(mask == 0, torch.tensor(-torch.inf))
+			masked_logits = logits.masked_fill(mask == 0, float('-inf'))
 			probs = torch.softmax(masked_logits, dim = -1)
 
 			if self.training:
@@ -292,7 +292,7 @@ class ActorNN(torch.nn.Module):
 		if self.module_type == 'SHOW':
 			num_valid = masks.sum(dim = -1).clamp(min = 1)
 
-			masked_logits = logits.masked_fill(masks == 0, torch.tensor(-torch.inf))
+			masked_logits = logits.masked_fill(masks == 0, float('-inf'))
 			probs = torch.sigmoid(masked_logits)
 			probs = torch.clamp(probs, eps, 1 - eps)
 
@@ -306,7 +306,7 @@ class ActorNN(torch.nn.Module):
 			entropy = (entropy_bits.sum(dim = -1) / num_valid).mean()
 
 		elif self.module_type == 'PLAY':
-			masked_logits = logits.masked_fill(masks == 0, torch.tensor(-torch.inf))
+			masked_logits = logits.masked_fill(masks == 0, float('-inf'))
 			probs = torch.softmax(masked_logits, dim = -1)
 			probs = torch.clamp(probs, eps, 1 - eps)
 
@@ -392,6 +392,8 @@ class MultiAgentEnv:
 
 		self.args = args if args is not None else argparse.Namespace()
 
+		self.device: torch.device = MultiAgentEnv.resolve_device(getattr(self.args, 'device', 'auto'))
+
 		self._init_hyperparameters()
 
 		if mode is None:
@@ -417,8 +419,11 @@ class MultiAgentEnv:
 
 		self.reset()
 
-		self.actor = actor if actor is not None else self.create_actor()
-		self.critic = critic if critic is not None else self.create_critic()
+		self.actor = (actor if actor is not None else self.create_actor()).to(self.device)
+		self.critic = (critic if critic is not None else self.create_critic()).to(self.device)
+
+		if getattr(self.args, 'compile', False):
+			self.compile_models()
 
 		self.actor_optimizer: torch.optim.Optimizer | None =	None
 		self.critic_optimizer: torch.optim.Optimizer | None =	None
@@ -505,6 +510,38 @@ class MultiAgentEnv:
 	def set_mode(self, mode: MultiAgentEnv.ModelModes) -> None:
 		self.mode = mode
 
+	@staticmethod
+	def resolve_device(pref: str | None) -> torch.device:
+		if pref is None or pref == 'auto':
+			if torch.cuda.is_available():
+				return torch.device('cuda')
+			if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
+				return torch.device('mps')
+			return torch.device('cpu')
+		return torch.device(pref)
+
+	def compile_models(self) -> None:
+		dummy = {k: v.to(self.device) for k, v in MultiAgentEnv.get_dummy_state().items()}
+		dummy_mask = torch.ones(1, GAME_SETTINGS['NUM_CARDS'], device = self.device)
+		with torch.no_grad():
+			self.actor['SHOW'](dummy, dummy_mask)
+			self.actor['PLAY'](dummy, dummy_mask)
+			self.critic(dummy)
+
+		try:
+			self.critic = torch.compile(self.critic, dynamic = True)
+			for module_type in ('SHOW', 'PLAY'):
+				self.actor[module_type].evaluate_actions = torch.compile(self.actor[module_type].evaluate_actions, dynamic = True)
+		except Exception as e:
+			print(f'torch.compile failed: {e}', file = sys.stderr)
+			try:
+				response = input('Continue in eager mode (no compile)? [y/N]: ').strip().lower()
+			except EOFError:
+				response = ''
+			if response not in ('y', 'yes'):
+				sys.exit(1)
+			print('Continuing in eager mode (torch.compile disabled).', file = sys.stderr)
+
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
 			'SHOW': ActorNN('SHOW', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2),
@@ -517,8 +554,8 @@ class MultiAgentEnv:
 	def save_checkpoint(self, file_name: str | None = None) -> None:
 		checkpoint = {
 			'batch_num': self.batch_num,
-			'actor_state_dict': self.actor.state_dict(),
-			'critic_state_dict': self.critic.state_dict(),
+			'actor_state_dict': getattr(self.actor, '_orig_mod', self.actor).state_dict(),
+			'critic_state_dict': getattr(self.critic, '_orig_mod', self.critic).state_dict(),
 			'training_history': self.training_history
 		}
 
@@ -541,11 +578,11 @@ class MultiAgentEnv:
 				os.remove(tmp_path)
 
 	def load_checkpoint(self, path: str) -> None:
-		checkpoint = torch.load(path, weights_only = False)
+		checkpoint = torch.load(path, weights_only = False, map_location = self.device)
 
 		self.batch_num = checkpoint['batch_num']
-		self.actor.load_state_dict(checkpoint['actor_state_dict'])
-		self.critic.load_state_dict(checkpoint['critic_state_dict'])
+		getattr(self.actor, '_orig_mod', self.actor).load_state_dict(checkpoint['actor_state_dict'])
+		getattr(self.critic, '_orig_mod', self.critic).load_state_dict(checkpoint['critic_state_dict'])
 		self.training_history = checkpoint['training_history']
 		print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
 		# for name, param in self.actor.named_parameters():
@@ -569,7 +606,7 @@ class MultiAgentEnv:
 		actor.load_state_dict(checkpoint['actor_state_dict'])
 		actor.eval()
 
-		return actor
+		return actor.to(self.device)
 
 	def get_opponent_sampling_weights(self, model_paths: list[str]) -> np.ndarray:
 		n = len(model_paths)
@@ -816,8 +853,8 @@ class MultiAgentEnv:
 			actor = self.actor if self._opponent_actors[first_stream] is None else self._opponent_actors[first_stream]
 
 			states = [self._latest_state[stream] for stream, env, seat, mt in items]
-			inputs = {k: torch.tensor(np.stack([state[k] for state in states]), dtype = torch.float32) for k in states[0]}
-			masks = torch.tensor(np.stack([actor[module_type].calculate_action_mask(state) for state in states]))
+			inputs = {k: torch.tensor(np.stack([state[k] for state in states]), dtype = torch.float32).to(self.device) for k in states[0]}
+			masks = torch.tensor(np.stack([actor[module_type].calculate_action_mask(state) for state in states])).to(self.device)
 
 			with torch.no_grad():
 				actions, log_probs = actor[module_type](inputs, masks)
@@ -828,10 +865,10 @@ class MultiAgentEnv:
 						self._episode_rewards[stream].clear()
 						self._episode_ts[stream] = 0
 
-					self._batch_states[stream].append({k: inputs[k][i] for k in inputs})
-					self._batch_actions[stream].append(actions[i])
-					self._batch_action_masks[stream].append(masks[i])
-					self._batch_log_probs[stream].append(log_probs[i])
+					self._batch_states[stream].append({k: inputs[k][i].cpu() for k in inputs})
+					self._batch_actions[stream].append(actions[i].cpu())
+					self._batch_action_masks[stream].append(masks[i].cpu())
+					self._batch_log_probs[stream].append(log_probs[i].cpu())
 					self._episode_rewards[stream].append(np.array([0.0]))
 					self._episode_ts[stream] += 1
 					recorded += 1
@@ -1260,8 +1297,8 @@ class MultiAgentEnv:
 		if actor is None:
 			actor = self.actor
 
-		inputs = {k: torch.tensor(v, dtype = torch.float32).unsqueeze(0) for k, v in self._latest_state[ws_idx].items()}
-		mask = torch.tensor(np.array([actor[actor_module_type].calculate_action_mask(self._latest_state[ws_idx])]))
+		inputs = {k: torch.tensor(v, dtype = torch.float32).unsqueeze(0).to(self.device) for k, v in self._latest_state[ws_idx].items()}
+		mask = torch.tensor(np.array([actor[actor_module_type].calculate_action_mask(self._latest_state[ws_idx])])).to(self.device)
 
 		actions, log_probs = actor[actor_module_type](inputs, mask)
 
@@ -1463,6 +1500,13 @@ class MultiAgentEnv:
 									for log_prob in stream
 								], dim = 0)		# (B)
 
+		batch_states =			{k: v.to(self.device) for k, v in batch_states.items()}
+		batch_actions =			batch_actions.to(self.device)
+		batch_action_masks =	batch_action_masks.to(self.device)
+		batch_log_probs =		batch_log_probs.to(self.device)
+		batch_advantages =		batch_advantages.to(self.device)
+		batch_returns =			batch_returns.to(self.device)
+
 		game_states = batch_states['game_state']
 		show_mask = game_states[:, 0:2].sum(dim = 1) > 0
 		play_mask = game_states[:, 2:6].sum(dim = 1) > 0
@@ -1496,7 +1540,7 @@ class MultiAgentEnv:
 				desc = f'Training ({len(batch_state_dicts)} samples): ',
 				dynamic_ncols = True
 		):
-			indices = torch.randperm(batch_len)
+			indices = torch.randperm(batch_len, device = self.device)
 
 			for start in range(0, batch_len, mini_batch_len):
 				end = start + mini_batch_len
@@ -1512,8 +1556,8 @@ class MultiAgentEnv:
 				mini_batch_show_mask =		show_mask[mini_batch_indices]
 				mini_batch_play_mask =		play_mask[mini_batch_indices]
 
-				mini_batch_log_probs_new =	torch.zeros(mini_batch_indices.shape[0])
-				mini_batch_entropy =		torch.tensor(0.0)
+				mini_batch_log_probs_new =	torch.zeros(mini_batch_indices.shape[0], device = self.device)
+				mini_batch_entropy =		torch.tensor(0.0, device = self.device)
 
 				mini_batch_values_new = self.critic(mini_batch_states)
 
@@ -1663,12 +1707,12 @@ class MultiAgentEnv:
 			batch_returns = []
 
 			stacked_states = {
-				k: torch.stack([s[k].flatten() for s in stream_states], dim = 0)
+				k: torch.stack([s[k].flatten() for s in stream_states], dim = 0).to(self.device)
 				for k in stream_states[0].keys()
 			}
 
 			with torch.no_grad():
-				batch_values = self.critic(stacked_states).numpy()
+				batch_values = self.critic(stacked_states).cpu().numpy()
 
 			value_idx = 0
 			for episode_rewards in stream_rewards:
@@ -2038,6 +2082,14 @@ def parse_arguments() -> argparse.Namespace:
 	parser.add_argument(
 		'--seed', type = int, default = None,
 		help = 'Seed random/numpy/torch (+ native deals) for reproducible runs'
+	)
+	parser.add_argument(
+		'--device', type = str, default = 'auto', choices = ['auto', 'cpu', 'cuda', 'mps'],
+		help = 'Compute device (auto = cuda/mps if available else cpu)'
+	)
+	parser.add_argument(
+		'--compile', action = 'store_true',
+		help = 'Use torch.compile'
 	)
 	parser.add_argument(
 		'--console-server-url', type = str,
