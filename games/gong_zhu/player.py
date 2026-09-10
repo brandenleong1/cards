@@ -542,6 +542,15 @@ class MultiAgentEnv:
 				sys.exit(1)
 			print('Continuing in eager mode (torch.compile disabled).', file = sys.stderr)
 
+	def critic_values(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
+		n = next(iter(states.values())).shape[0]
+		outs = []
+		with torch.no_grad():
+			for start in range(0, n, self.mini_batch_size):
+				mini_batch = slice(start, start + self.mini_batch_size)
+				outs.append(self.critic({k: v[mini_batch] for k, v in states.items()}))
+		return torch.cat(outs, dim = 0)
+
 	def create_actor(self) -> torch.nn.ModuleDict:
 		return torch.nn.ModuleDict({
 			'SHOW': ActorNN('SHOW', (1024, 512, 256, 128, GAME_SETTINGS['NUM_CARDS']), (1024, 512, 256), 256, 2),
@@ -1516,8 +1525,7 @@ class MultiAgentEnv:
 				phase_advantages = batch_advantages[mask]
 				batch_advantages[mask] = (phase_advantages - phase_advantages.mean()) / (phase_advantages.std() + eps)
 
-		with torch.no_grad():
-			batch_values_old = self.critic(batch_states)
+		batch_values_old = self.critic_values(batch_states)
 
 		if self.actor_optimizer is None:
 			self.actor_optimizer =		torch.optim.Adam(self.actor.parameters(),	lr = self.actor_lr,		fused = True)
@@ -1624,8 +1632,8 @@ class MultiAgentEnv:
 
 		all_episode_rewards = [rewards.sum() for stream in trajectories['rewards'] for rewards in stream]
 
+		predicted_values = self.critic_values(batch_states)
 		with torch.no_grad():
-			predicted_values = self.critic(batch_states)
 			if show_mask.any():
 				show_explained_variance = 1 - ((batch_returns[show_mask] - predicted_values[show_mask]).var() / (batch_returns[show_mask].var() + eps)).item()
 			if play_mask.any():
@@ -1711,8 +1719,7 @@ class MultiAgentEnv:
 				for k in stream_states[0].keys()
 			}
 
-			with torch.no_grad():
-				batch_values = self.critic(stacked_states).cpu().numpy()
+			batch_values = self.critic_values(stacked_states).cpu().numpy()
 
 			value_idx = 0
 			for episode_rewards in stream_rewards:
