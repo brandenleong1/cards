@@ -14,3 +14,11 @@ find_package(TBB QUIET)
 if(TBB_FOUND)
 	target_link_libraries(cards PUBLIC TBB::tbb)
 endif()
+
+if(CARDS_BUILD_PYTHON)
+	add_subdirectory(bindings/python)
+endif()
+
+if(CARDS_BUILD_NODE)
+	add_subdirectory(bindings/node)
+endif()

@@ -1,7 +1,7 @@
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const addon = require('./gong_zhu.node');
+const addon = require('../../../../../build/gong_zhu.node');
 
 function seedFrom(rngFn) {
 	const r = (rngFn || Math.random)();
