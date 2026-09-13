@@ -23,6 +23,7 @@ enum class GameState : uint8_t {
 };
 
 std::string to_string(const GameState& gameState) noexcept;
+GameState gameStateFromString(const std::string& s) noexcept;
 
 } // namespace gong_zhu
 } // namespace cards

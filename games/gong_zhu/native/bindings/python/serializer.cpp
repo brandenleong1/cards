@@ -23,11 +23,11 @@ py::object toPy(const Message& message) {
 }
 
 py::object toPy(const std::vector<bool>& v) {
-	py::list out;
+	py::list ret;
 	for (bool b : v) {
-		out.append(b ? 1 : 0);
+		ret.append(b ? 1 : 0);
 	}
-	return out;
+	return ret;
 }
 
 py::object toPy(const std::tuple<int64_t, int64_t>& score) {

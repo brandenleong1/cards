@@ -5,7 +5,6 @@ import seedrandom from 'seedrandom';
 
 import { GongZhu } from './games/gong_zhu/server.js';
 import * as gameUtils from './utils/game_utils.js';
-import * as commandParse from './utils/command_parse.js';
 import * as Utils from './utils/utils.js';
 
 const game = {

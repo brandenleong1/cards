@@ -54,5 +54,10 @@ if(CARDS_BUILD_PYTHON)
 	find_package(pybind11 CONFIG REQUIRED)
 endif()
 
+option(CARDS_BUILD_NODE "Build the Node N-API addon" OFF)
+if(CARDS_BUILD_NODE)
+	set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 add_subdirectory(native)
 add_subdirectory(games/gong_zhu/native)

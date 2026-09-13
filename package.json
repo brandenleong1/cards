@@ -8,7 +8,12 @@
     "ws": "^8.18.2"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:native": "cmake-js compile --out build/build-node --CDCARDS_BUILD_NODE=ON"
+  },
+  "devDependencies": {
+    "cmake-js": "^7.3.0",
+    "node-addon-api": "^8.0.0"
   },
   "name": "cards",
   "version": "1.0.0",

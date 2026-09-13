@@ -1,7 +1,6 @@
 import * as Utils from '../../utils/utils.js';
-import * as CommandParse from '../../utils/command_parse.js';
-import * as Core from './core.js';
 import { Game } from '../game.js';
+import * as Core from './native/bindings/node/core.js';
 
 export class GongZhu extends Game {
 	get defaultSettings() {
@@ -23,7 +22,7 @@ export class GongZhu extends Game {
 	processCommand(data, ws, server) {
 		let gameData = server.gameData;
 
-		let command = CommandParse.parseCommand(data);
+		let command = Core.parseCommand(data);
 		let commandUpper = command.command[0].toUpperCase();
 		let ret = [];
 		let status = 1;

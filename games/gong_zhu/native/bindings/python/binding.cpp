@@ -48,7 +48,7 @@ public:
 	}
 
 	py::tuple applyCommand(uint64_t seat, const std::string& cmd) {
-		const auto [status, messages] = this->gameData.applyCommand(static_cast<size_t>(seat), cmd, *this->shuffler, nullptr);
+		const auto [status, messages] = this->gameData.applyCommand(static_cast<size_t>(seat), cards::parseCommand(cmd), *this->shuffler, nullptr);
 		return py::make_tuple(static_cast<int64_t>(status), toPy(messages));
 	}
 

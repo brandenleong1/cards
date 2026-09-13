@@ -16,5 +16,12 @@ std::string to_string(const GameState& gameState) noexcept {
 	}
 }
 
+GameState gameStateFromString(const std::string& s) noexcept {
+#define GAME_STATE(e) if (s == #e) return GameState::e;
+#include "gong_zhu/game_state.def"
+#undef GAME_STATE
+	return GameState::UNDEFINED;
+}
+
 } // namespace gong_zhu
 } // namespace cards

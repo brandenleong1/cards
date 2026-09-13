@@ -342,14 +342,13 @@ inline bool isScoringCard(const uint8_t cardId) {
 
 std::tuple<int8_t, std::vector<Message>> GameData::applyCommand(
 	const size_t turnOrderIdx,
-	const std::string& command,
+	const ParsedCommand& parsedCommand,
 	Shuffler& shuffler,
 	const std::vector<Player>* const newTurnOrder
 ) {
 	std::vector<Message> ret;
 	int8_t status = 1;
 
-	ParsedCommand parsedCommand = parseCommand(command);
 	if (parsedCommand.command.empty()) {
 		return {false, ret};
 	}

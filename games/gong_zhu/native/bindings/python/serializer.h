@@ -29,11 +29,11 @@ py::object toPy(const GameData& gd);
 
 template <typename T>
 py::object toPy(const std::vector<T>& v) {
-	py::list out;
+	py::list ret;
 	for (const T& e : v) {
-		out.append(toPy(e));
+		ret.append(toPy(e));
 	}
-	return out;
+	return ret;
 }
 
 } // namespace gong_zhu

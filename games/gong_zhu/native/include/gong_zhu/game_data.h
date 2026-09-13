@@ -4,6 +4,7 @@
 #include <unordered_set>
 
 #include "cards/cards.h"
+#include "cards/command.h"
 #include "cards/message.h"
 #include "cards/player.h"
 #include "cards/rng.h"
@@ -55,7 +56,7 @@ public:
 	int64_t getScoreFromCards(const std::vector<Card>& cards) const;
 	std::tuple<int8_t, std::vector<Message>> applyCommand(
 		const size_t turnOrderIdx,
-		const std::string& command,
+		const ParsedCommand& parsedCommand,
 		Shuffler& shuffler,
 		const std::vector<Player>* const newTurnOrder = nullptr
 	);

@@ -1,4 +1,4 @@
-#!/usr/env/bin bash
+#!/usr/bin/env bash
 
 set -e
 
@@ -79,4 +79,15 @@ echo "Installing Python requirements..."
 python -m pip install -r "$SCRIPT_DIR/requirements.txt"
 
 echo "Installing native module (gong_zhu_native)..."
-python -m pip install "$SCRIPT_DIR"
+python -m pip install --no-build-isolation -e "$SCRIPT_DIR"
+
+if ! command -v npm &> /dev/null; then
+	echo "Error: npm not found; install Node.js (>=22) to build the server's native addon." >&2
+	exit 1
+fi
+
+echo "Installing Node dependencies..."
+npm install
+
+echo "Building Node addon (gong_zhu.node)..."
+npm run build:native
