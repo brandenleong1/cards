@@ -25,7 +25,9 @@ export function initGame(gameData, turnOrder, rngFn = undefined) {
 export function applyCommand(gameData, seat, command, rngFn = undefined, newTurnOrder = null) {
 	const willShuffle = command.command[0].toUpperCase() === 'DEAL';
 	const seed = willShuffle ? seedFrom(rngFn) : 0;
-	return addon.applyCommand(gameData, seat, command, seed, newTurnOrder ?? null);
+	const res = addon.applyCommand(gameData, seat, command, seed, newTurnOrder ?? null);
+	Object.assign(gameData, res.gameData);
+	return { status: res.status, events: res.events };
 }
 
 export function obfuscateGameData(gameData, turnOrderIdx) {

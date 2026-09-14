@@ -18,20 +18,11 @@ Napi::Object toJs(Napi::Env env, const GameData& gameData) {
 	ret.Set("minPlayers", Napi::Number::New(env, gameData.minPlayers));
 	ret.Set("maxPlayers", Napi::Number::New(env, gameData.maxPlayers));
 
-	Napi::Array decks = Napi::Array::New(env, gameData.decks.size());
-	for (uint32_t i = 0; i < gameData.decks.size(); i++) {
-		decks.Set(i, toJs(env, gameData.decks[i]));
-	}
-	ret.Set("decks", decks);
-
+	ret.Set("decks", toJs(env, gameData.decks));
 	ret.Set("turnOrder", toJs(env, gameData.turnOrder));
 	ret.Set("turnFirstIdx", Napi::Number::New(env, static_cast<double>(gameData.turnFirstIdx)));
 
-	Napi::Array needToAct = Napi::Array::New(env, gameData.needToAct.size());
-	for (uint32_t i = 0; i < gameData.needToAct.size(); i++) {
-		needToAct.Set(i, Napi::Number::New(env, gameData.needToAct[i] ? 1 : 0));
-	}
-	ret.Set("needToAct", needToAct);
+	ret.Set("needToAct", toJs(env, gameData.needToAct));
 
 	Napi::Array hands = Napi::Array::New(env, gameData.hands.size());
 	for (uint32_t i = 0; i < gameData.hands.size(); i++) {
@@ -50,27 +41,12 @@ Napi::Object toJs(Napi::Env env, const GameData& gameData) {
 	ret.Set("hands", hands);
 
 	// stacks = [discard, [[card, val], ...]]
-	Napi::Array shownStack = Napi::Array::New(env, std::get<1>(gameData.stacks).size());
-	for (uint32_t i = 0; i < std::get<1>(gameData.stacks).size(); i++) {
-		const std::tuple<Card, uint8_t>& shown = std::get<1>(gameData.stacks)[i];
-		Napi::Array pair = Napi::Array::New(env, 2);
-		pair.Set(uint32_t(0), Napi::Number::New(env, std::get<0>(shown).getCardId()));
-		pair.Set(uint32_t(1), Napi::Number::New(env, std::get<1>(shown)));
-		shownStack.Set(i, pair);
-	}
 	Napi::Array stacks = Napi::Array::New(env, 2);
 	stacks.Set(uint32_t(0), toJs(env, std::get<0>(gameData.stacks)));
-	stacks.Set(uint32_t(1), shownStack);
+	stacks.Set(uint32_t(1), toJs(env, std::get<1>(gameData.stacks)));
 	ret.Set("stacks", stacks);
 
-	Napi::Array scores = Napi::Array::New(env, gameData.scores.size());
-	for (uint32_t i = 0; i < gameData.scores.size(); i++) {
-		Napi::Array score = Napi::Array::New(env, 2);
-		score.Set(uint32_t(0), Napi::Number::New(env, static_cast<double>(std::get<0>(gameData.scores[i]))));
-		score.Set(uint32_t(1), Napi::Number::New(env, static_cast<double>(std::get<1>(gameData.scores[i]))));
-		scores.Set(i, score);
-	}
-	ret.Set("scores", scores);
+	ret.Set("scores", toJs(env, gameData.scores));
 
 	ret.Set("round", Napi::Number::New(env, static_cast<double>(gameData.round)));
 

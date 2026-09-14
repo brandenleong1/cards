@@ -1,11 +1,36 @@
+#include <cstdint>
 #include <string>
+#include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "cards/serializer.h"
 
 
 namespace cards {
+
+Napi::Array toJs(Napi::Env env, const std::vector<bool>& v) {
+	Napi::Array ret = Napi::Array::New(env, v.size());
+	for (uint32_t i = 0; i < v.size(); i++) {
+		ret.Set(i, Napi::Number::New(env, v[i] ? 1 : 0));
+	}
+	return ret;
+}
+
+Napi::Array toJs(Napi::Env env, const std::tuple<int64_t, int64_t>& pair) {
+	Napi::Array ret = Napi::Array::New(env, 2);
+	ret.Set(uint32_t(0), Napi::Number::New(env, static_cast<double>(std::get<0>(pair))));
+	ret.Set(uint32_t(1), Napi::Number::New(env, static_cast<double>(std::get<1>(pair))));
+	return ret;
+}
+
+Napi::Array toJs(Napi::Env env, const std::tuple<Card, uint8_t>& pair) {
+	Napi::Array ret = Napi::Array::New(env, 2);
+	ret.Set(uint32_t(0), Napi::Number::New(env, std::get<0>(pair).getCardId()));
+	ret.Set(uint32_t(1), Napi::Number::New(env, std::get<1>(pair)));
+	return ret;
+}
 
 Napi::Value toJs(Napi::Env env, const Card& card) {
 	if (card.getIsHidden()) {
@@ -117,7 +142,7 @@ ParsedCommand parsedCommandFromJs(Napi::Object o) {
 		}
 	}
 
-	return ParsedCommand{command, tags};
+	return ParsedCommand{std::move(command), std::move(tags)};
 }
 
 } // namespace cards

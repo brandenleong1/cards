@@ -1,6 +1,5 @@
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <tuple>
 #include <vector>
 
@@ -62,30 +61,25 @@ Napi::Value applyCommand(const Napi::CallbackInfo& info) {
 		return env.Null();
 	}
 
-	Napi::Object gameDataJs = info[0].As<Napi::Object>();
-	GameData gameData = gameDataFromJs(gameDataJs);
+	GameData gameData = gameDataFromJs(info[0].As<Napi::Object>());
 	const size_t turnOrderIdx = static_cast<size_t>(info[1].As<Napi::Number>().Int64Value());
 	const ParsedCommand parsedCommand = parsedCommandFromJs(info[2].As<Napi::Object>());
 	const uint32_t seed = info[3].As<Napi::Number>().Uint32Value();
-	const std::optional<std::vector<Player>> newTurnOrderOpt =
-		(info[4].IsNull() || info[4].IsUndefined())
-			? std::optional<std::vector<Player>>{}
-			: std::optional<std::vector<Player>>{playersFromJs(info[4].As<Napi::Array>())};
-	const std::vector<Player>* const newTurnOrder = newTurnOrderOpt.has_value() ? &(newTurnOrderOpt.value()) : nullptr;
+
+	std::vector<Player> newTurnOrderVec;
+	const std::vector<Player>* newTurnOrder = nullptr;
+	if (!info[4].IsNull() && !info[4].IsUndefined()) {
+		newTurnOrderVec = playersFromJs(info[4].As<Napi::Array>());
+		newTurnOrder = &newTurnOrderVec;
+	}
 
 	SeededShuffler shuffler(seed);
 	const std::tuple<int8_t, std::vector<Message>> ret = gameData.applyCommand(turnOrderIdx, parsedCommand, shuffler, newTurnOrder);
 
-	const Napi::Object newGameDataJs = toJs(env, gameData);
-	const Napi::Array newGameDataJsKeys = newGameDataJs.GetPropertyNames();
-	for (uint32_t i = 0; i < newGameDataJsKeys.Length(); i++) {
-		const Napi::Value key = newGameDataJsKeys.Get(i);
-		gameDataJs.Set(key, newGameDataJs.Get(key));
-	}
-
 	Napi::Object retJs = Napi::Object::New(env);
 	retJs.Set("status", Napi::Number::New(env, std::get<0>(ret)));
 	retJs.Set("events", toJs(env, std::get<1>(ret)));
+	retJs.Set("gameData", toJs(env, gameData));
 
 	return retJs;
 }

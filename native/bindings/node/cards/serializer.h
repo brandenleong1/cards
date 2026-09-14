@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <tuple>
 #include <vector>
 
 #include <napi.h>
@@ -17,6 +18,18 @@ Napi::Value toJs(Napi::Env env, const Card& card);
 Napi::String toJs(Napi::Env env, const Player& player);
 Napi::Object toJs(Napi::Env env, const Message& message);
 Napi::Object toJs(Napi::Env env, const ParsedCommand& parsedCommand);
+Napi::Array toJs(Napi::Env env, const std::vector<bool>& v);
+Napi::Array toJs(Napi::Env env, const std::tuple<int64_t, int64_t>& pair);
+Napi::Array toJs(Napi::Env env, const std::tuple<Card, uint8_t>& pair);
+
+template <typename T>
+Napi::Array toJs(Napi::Env env, const std::vector<T>& v) {
+	Napi::Array ret = Napi::Array::New(env, v.size());
+	for (uint32_t i = 0; i < v.size(); i++) {
+		ret.Set(i, toJs(env, v[i]));
+	}
+	return ret;
+}
 
 Card cardFromJs(Napi::Value value);
 std::vector<Card> cardsFromJs(Napi::Array arr);

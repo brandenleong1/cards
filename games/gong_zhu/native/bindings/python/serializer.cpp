@@ -6,28 +6,6 @@
 namespace cards {
 namespace gong_zhu {
 
-py::object toPy(const std::vector<bool>& v) {
-	py::list ret;
-	for (bool b : v) {
-		ret.append(b ? 1 : 0);
-	}
-	return ret;
-}
-
-py::object toPy(const std::tuple<int64_t, int64_t>& score) {
-	py::list pair;
-	pair.append(std::get<0>(score));
-	pair.append(std::get<1>(score));
-	return pair;
-}
-
-py::object toPy(const std::tuple<Card, uint8_t>& shown) {
-	py::list pair;
-	pair.append(static_cast<int64_t>(std::get<0>(shown).getCardId()));
-	pair.append(static_cast<int64_t>(std::get<1>(shown)));
-	return pair;
-}
-
 py::object toPy(const Hand& hand) {
 	py::list played;
 	if (hand.played.has_value()) {
