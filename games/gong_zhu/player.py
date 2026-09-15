@@ -688,39 +688,6 @@ class MultiAgentEnv:
 				await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
 				await self._listen(ws_idx)
 
-		elif self.mode == MultiAgentEnv.ModelModes.eval:
-			async def connect_ws(ws_idx: int) -> None:
-				async with connect(url) as ws:
-					self.ws_list[ws_idx] = ws
-
-					if self.console_listeners is not None:
-						self.console_listeners.create_console(ws_idx, f'agent_{ws_idx}')
-
-					await ws.send(json.dumps({'tag': 'requestSessionID', 'timestamp': int(time.time() * 1000)}))
-					await self._listen(ws_idx)
-
-			async def launch_eval() -> None:
-				while not all(
-					self.ws_list[i] is not None and hasattr(self.ws_list[i], 'connected') and self.ws_list[i].connected
-					for i in range(self.num_agents)
-				):
-					await asyncio.sleep(self.action_delay)
-
-				if hasattr(self.args, 'spectate') and self.args.spectate:
-					self.is_waiting_for_spectator = True
-
-					loop = asyncio.get_running_loop()
-					await loop.run_in_executor(None, lambda : input('Join as spectator now, [Enter] to continue...'))
-
-					self.is_waiting_for_spectator = False
-
-				await asyncio.sleep(0.5)
-				await self.eval()
-
-			tasks = [asyncio.create_task(connect_ws(i)) for i in range(self.num_agents)]
-			eval_task = asyncio.create_task(launch_eval())
-			await asyncio.gather(*tasks, eval_task)
-
 	def get_observation(self, env: gong_zhu.Env, env_idx: int, seat: int) -> None:
 		stream = env_idx * self.num_agents + seat
 
@@ -824,6 +791,44 @@ class MultiAgentEnv:
 		env.apply_command(0, 'DEAL')
 		for seat in range(self.num_agents):
 			self.get_observation(env, env_idx, seat)
+
+	def play_eval_game(self, seed: int) -> list[float]:
+		env = gong_zhu.Env({'expose3': True, 'zhu_yang_man_juan': True, 'num_players': self.num_agents})
+
+		for seat in range(self.num_agents):
+			self.reset_game_state(seat)
+
+		env.reset(seed)
+		for seat in range(self.num_agents):
+			self.get_observation(env, 0, seat)
+
+		env.apply_command(0, 'DEAL')
+		for seat in range(self.num_agents):
+			self.get_observation(env, 0, seat)
+
+		while True:
+			game_state = env.game_state()
+			if game_state in {'SCORE', 'LEADERBOARD'}:
+				break
+
+			seat = env.current_seat()
+			if seat < 0:
+				break
+
+			module_type = ActorNN.get_module_type_from_game_state(game_state)
+			if module_type == '':
+				break
+
+			with torch.no_grad():
+				actions, log_probs, inputs, mask = self.get_action(seat, module_type, actor = self.eval_actors[seat])
+
+			for command in self.action_to_commands(actions[0], self._latest_observation[seat], seat):
+				env.apply_command(seat, command)
+
+			for observed_seat in range(self.num_agents):
+				self.get_observation(env, 0, observed_seat)
+
+		return list(self._latest_state[0]['scores'])
 
 	def collect_pending_actions(self, envs: list) -> list[tuple[int, Any, int, str]]:
 		pending: list[tuple[int, Any, int, str]] = []
@@ -1785,7 +1790,9 @@ class MultiAgentEnv:
 			self.eval_total_matches = 0
 			self.eval_total_games = 0
 
-		ws = self.ws_list[0]
+		self.num_envs = 1
+		self.reset()
+		self._turn_order = [str(seat) for seat in range(self.num_agents)]
 
 		# Eval Loop
 		while True:
@@ -1807,89 +1814,39 @@ class MultiAgentEnv:
 			# Play [self.eval_games_per_match] Sets
 			for game_idx in range(self.eval_games_per_match):
 
-				set_seed = int(time.time() * 1000)
+				set_seed = int(time.time() * 1000) & 0xFFFFFFFF
 				set_models = random.sample(batch_models, self.num_agents)
 				set_scores = {model_path: 0.0 for model_path in set_models}
-
-				has_invalid_game = False
 
 				for rotation in range(self.num_agents):
 					rotated_models = [set_models[(i + rotation) % self.num_agents] for i in range(self.num_agents)]
 					self.load_models(rotated_models)
 
-					# Update Seed
-					self.eval_settings['allowCustomSeed'] = True
-					self.eval_settings['customSeed'] = set_seed
-					await ws.send(json.dumps({
-						'tag': 'updateLobbySettings',
-						'data': {'settings': self.eval_settings},
-						'timestamp': int(time.time() * 1000)
-					}))
+					self.eval_scores = self.play_eval_game(set_seed)
 
-					# Reset State
-					for ws_idx in range(self.num_agents):
-						self.reset_game_state(ws_idx)
+					for seat in range(self.num_agents):
+						set_scores[rotated_models[seat]] += self.eval_scores[seat]
 
-					self.is_evaluating = False
+				self.eval_total_games += 1
 
-					self.eval_game_complete_event.clear()
-					self.eval_scores = [None for _ in range(self.num_agents)]
+				agg_paths = list(set_scores.keys())
+				agg_scores = [set_scores[p] for p in agg_paths]
+				rating_changes = self.elo_rating_system.update_ratings(agg_paths, agg_scores)
 
-					await ws.send(json.dumps({
-						'tag': 'startGame',
-						'timestamp': int(time.time() * 1000)
-					}))
+				log_path = os.path.join(self.args.model_dir, self.args.log_file)
+				os.makedirs(self.args.model_dir, exist_ok = True)
+				with open(log_path, 'a') as f:
+					print(f' --- Eval Set {game_idx + 1} / {self.eval_games_per_match} (seed {set_seed}) ---', file = f)
+					print(f'  Total Sets: {self.eval_total_games}', file = f)
+					for model_path in agg_paths:
+						model_name = os.path.basename(model_path)
+						rating = self.elo_rating_system.get_rating(model_path)
+						change = rating_changes.get(os.path.abspath(model_path), 0)
+						print(f'  [{model_name}]:', file = f)
+						print(f'    Aggregate Score = {set_scores[model_path]}', file = f)
+						print(f'    ELO = {rating:.4f} ({change:+.4f})', file = f)
 
-					await self.eval_game_complete_event.wait()
-
-					if any(score is None for score in self.eval_scores):
-						has_invalid_game = True
-
-					else:
-						for ws_idx in range(self.num_agents):
-							seat = self._turn_order.index(self.ws_list[ws_idx].username)
-							set_scores[rotated_models[ws_idx]] += self.eval_scores[seat]
-
-					await ws.send(json.dumps({
-						'tag': 'sendCommand',
-						'data': 'EXIT',
-						'timestamp': int(time.time() * 1000),
-						'currentFrame': {'$bigint': str(self.eval_last_frame)}
-					}))
-
-					lobby_ready = await self.wait_for_lobby()
-
-					if not lobby_ready:
-						while not all(self._latest_observation[ws_idx] is None for ws_idx in range(self.num_agents)):
-							await asyncio.sleep(0.5)
-
-					if has_invalid_game:
-						break
-
-				if has_invalid_game:
-					warnings.warn('Game ended but scores were not captured, skipping ELO update')
-
-				else:
-					self.eval_total_games += 1
-
-					agg_paths = list(set_scores.keys())
-					agg_scores = [set_scores[p] for p in agg_paths]
-					rating_changes = self.elo_rating_system.update_ratings(agg_paths, agg_scores)
-
-					log_path = os.path.join(self.args.model_dir, self.args.log_file)
-					os.makedirs(self.args.model_dir, exist_ok = True)
-					with open(log_path, 'a') as f:
-						print(f' --- Eval Set {game_idx + 1} / {self.eval_games_per_match} (seed {set_seed}) ---', file = f)
-						print(f'  Total Sets: {self.eval_total_games}', file = f)
-						for model_path in agg_paths:
-							model_name = os.path.basename(model_path)
-							rating = self.elo_rating_system.get_rating(model_path)
-							change = rating_changes.get(os.path.abspath(model_path), 0)
-							print(f'  [{model_name}]:', file = f)
-							print(f'    Aggregate Score = {set_scores[model_path]}', file = f)
-							print(f'    ELO = {rating:.4f} ({change:+.4f})', file = f)
-
-					self.save_all_ratings()
+				self.save_all_ratings()
 
 			# Matchup Complete
 			self.eval_total_matches += 1
@@ -2249,12 +2206,12 @@ async def main() -> None:
 		if args.infer:
 			env.set_mode(MultiAgentEnv.ModelModes.infer)
 			print('Starting inference mode...')
+			await env.connect(args.url)
 
 		elif args.eval:
 			env.set_mode(MultiAgentEnv.ModelModes.eval)
 			print('Starting evaluation mode...')
-
-		await env.connect(args.url)
+			await env.eval()
 
 	else:
 		raise ValueError('No mode specified')
