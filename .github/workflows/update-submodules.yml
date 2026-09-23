@@ -1,0 +1,27 @@
+name: Update Submodules
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: git submodule update --remote lib/utils
+      - name: Update [utils] Submodule
+        run: |
+          if ! git diff --quiet lib/utils; then
+            SHA=$(git -C lib/utils rev-parse --short HEAD)
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add lib/utils
+            git commit -m "Auto-Bump [Utils] Submodule (-> $SHA)"
+            git push
+          fi
