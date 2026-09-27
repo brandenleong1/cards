@@ -223,7 +223,7 @@ class ActorNN(torch.nn.Module):
 
 		if game_state in {'SHOW_3', 'SHOW_ALL'}:
 			exposed = np.any(state['exposed'] > 1, axis = 0)
-			legal_cards.update(card for card in [11, 13, 36, 48] if not exposed[card])
+			legal_cards.update(card for card in [11, 13, 36, 48] if state['hand'][card] == 1 and not exposed[card])
 
 		elif game_state in {'PLAY_0'}:
 			hand = np.where(state['hand'] == 1)[0].tolist()
