@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
@@ -69,17 +74,16 @@ if [ ! -d "$VENV_DIR" ]; then
 	python3 -m venv "$VENV_DIR"
 fi
 
-# shellcheck source=/dev/null
-source "$VENV_DIR/bin/activate"
+VENV_PYTHON="$VENV_DIR/bin/python"
 
 echo "Upgrading pip..."
-python -m pip install --upgrade pip
+"$VENV_PYTHON" -m pip install --upgrade pip
 
 echo "Installing Python requirements..."
-python -m pip install -r "$SCRIPT_DIR/requirements.txt"
+"$VENV_PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt"
 
 echo "Installing native module (gong_zhu_native)..."
-python -m pip install --no-build-isolation -e "$SCRIPT_DIR"
+"$VENV_PYTHON" -m pip install --no-build-isolation -e "$SCRIPT_DIR"
 
 if ! command -v npm &> /dev/null; then
 	echo "Error: npm not found; install Node.js (>=22) to build the server's native addon." >&2
