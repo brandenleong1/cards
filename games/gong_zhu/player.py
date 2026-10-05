@@ -1769,7 +1769,9 @@ class MultiAgentEnv:
 		for pattern in patterns:
 			model_files.extend(glob.glob(os.path.join(model_dir, pattern)))
 
-		return sorted(model_files)
+		int_aware_key = lambda path: [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', os.path.basename(path))]
+
+		return sorted(model_files, key = int_aware_key)
 
 	def load_models(self, model_paths: list[str]) -> None:
 		assert len(model_paths) == self.num_agents
