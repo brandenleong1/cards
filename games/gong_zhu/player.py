@@ -602,7 +602,7 @@ class MultiAgentEnv:
 	def load_actor_from_checkpoint(self, model_path: str) -> torch.nn.ModuleDict:
 		actor = self.create_actor()
 
-		checkpoint = torch.load(model_path, weights_only = False)
+		checkpoint = torch.load(model_path, weights_only = False, map_location = self.device)
 
 		# Init Lazy Modules
 		dummy_input = MultiAgentEnv.get_dummy_state()
@@ -1911,7 +1911,7 @@ class EloRatingSystem:
 	def load_rating(self, model_path: str) -> None:
 		model_path = os.path.abspath(model_path)
 		try:
-			checkpoint = torch.load(model_path, weights_only = False)
+			checkpoint = torch.load(model_path, weights_only = False, map_location = 'cpu')
 			self.ratings[model_path] = checkpoint.get('elo_rating', self.initial_rating)
 			self.games_played[model_path] = checkpoint.get('elo_games_played', 0)
 		except Exception as e:
@@ -1921,7 +1921,7 @@ class EloRatingSystem:
 	def save_rating(self, model_path: str) -> None:
 		model_path = os.path.abspath(model_path)
 		try:
-			checkpoint = torch.load(model_path, weights_only = False)
+			checkpoint = torch.load(model_path, weights_only = False, map_location = 'cpu')
 			checkpoint['elo_rating'] = self.ratings[model_path]
 			checkpoint['elo_games_played'] = self.games_played[model_path]
 
