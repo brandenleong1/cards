@@ -1,9 +1,10 @@
 node_modules/
 package-lock.json
 **/notes.txt
+**/.cache/
 **/.venv/
 **/__pycache__/
 **/*.swp
 build/
 *.node
-tags
+tags.*
