@@ -7,6 +7,7 @@ name = "cards"
 version = "0.0.1"
 description = "Card game rules cores (C++ via pybind11)"
 requires-python = ">=3.10"
+license = "MIT"
 
 [tool.scikit-build]
 cmake.version = ">=3.16"
