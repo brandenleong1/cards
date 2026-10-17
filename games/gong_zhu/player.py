@@ -2153,6 +2153,12 @@ def parse_arguments() -> argparse.Namespace:
 	if args.train:
 		if args.n_workers < 1:
 			parser.error(f'--n-workers must be >= 1 (got {args.n_workers})')
+		if args.model_dir is None:
+			parser.error('--train requires --model-dir to be specified')
+		if args.model is not None and not os.path.isfile(args.model):
+			parser.error(f'--model [{args.model}] is not a valid resume file')
+		if args.timesteps_per_batch < 1:
+			parser.error(f'--timesteps-per-batch must be >= 1 (got {args.timesteps_per_batch})')
 
 	if args.infer:
 		if args.model is None:
@@ -2161,14 +2167,17 @@ def parse_arguments() -> argparse.Namespace:
 			parser.error(f'--model [{args.model}] is not a valid file')
 		if args.lobby is None:
 			parser.error('--infer requires --lobby to be specified')
-		if args.lobby is None:
-			parser.error('--infer requires --lobby to be specified')
+		if args.host is None:
+			parser.error('--infer requires --host to be specified')
 
 	if args.eval:
 		if args.model_dir is None:
 			parser.error('--eval requires --model-dir to be specified')
 		if not os.path.isdir(args.model_dir):
 			parser.error(f'--model-dir [{args.model_dir}] is not a valid directory')
+
+	if (args.train or args.eval) and gong_zhu is None:
+		parser.error('--train/--eval require the native module; run ./build.sh and activate .venv')
 
 	return args
 
