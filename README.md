@@ -12,6 +12,8 @@ Each game comes with a script in which you can train a model that learns to play
 
 ## Getting Started
 
+To clone the repository, run `git clone https://github.com/brandenleong1/cards.git --recurse-submodules`.
+
 ### Prerequisites
 
 | Dependency    | Version                      | Purpose                      |
@@ -21,11 +23,7 @@ Each game comes with a script in which you can train a model that learns to play
 | CMake         | ≥3.16                        | Native Core (Server + Agent) |
 | clang / gcc   | C++17; Clang ≥ 14 / GCC ≥ 11 | Build Native Core            |
 
-GPU is optional for training/running models.
-
-### Clone
-
-To clone the repository, run `git clone https://github.com/brandenleong1/cards.git --recurse-submodules`.
+GPU support is availble for training/running models.
 
 ### Build
 
@@ -63,30 +61,11 @@ Pretrained models are available at https://huggingface.co/EffOfEcks/cards, which
 
 Note: `./build.sh` creates but does not activate `.venv`.
 
-### Troubleshooting
-
- - "cmake not found" on `import cards` -- cmake must be on `PATH` in the shell that runs `player.py`
- - Native module unavailable -- rerun `build.sh` and activate `.venv`
-
-## Repository Layout
-
-The main server and the game hub client files are in the top level.
-
-Game-agnostic native core and bindings are under `native/`.
-
-Game files are stored one per directory under `games/`, containing the game-specific JS server module, webpage, native bindings, and agent script. Models are also found in the mirrored directory in the Hugging Face repository (see [Running the Agent](#running-the-agent)).
-
 ## Architecture
 
 The client (`games/*/script.js`) communicates with the server (`server.js`) via WebSocket.
 
 Each game's `Game` subclass manages its lobbies and players. Both the JS `Game` subclass and the Python bots share the game implementation in the C++ native core.
-
-### Adding a New Game
-
-Create a new directory under `games/`.
-
-Create a subclass of `Game`, add a native-rules module and bindings for both Node.js and Python, then add the webpage files for clients to connect to. To implement an RL training agent, add a `player.py` script.
 
 ## RL Agent
 
@@ -96,4 +75,6 @@ Each batch until the first checkpoint trains on seats identically filled with th
 
 ## License
 
-MIT -- see `LICENSE`
+MIT License -- see `LICENSE`
+
+Copyright (c) 2026 Branden Leong
