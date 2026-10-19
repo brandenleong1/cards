@@ -24,11 +24,11 @@ py::object toPy(const std::tuple<Card, uint8_t>& pair);
 
 template <typename T>
 py::object toPy(const std::vector<T>& v) {
-	py::list ret;
-	for (const T& e : v) {
-		ret.append(toPy(e));
-	}
-	return ret;
+    py::list ret;
+    for (const T& e : v) {
+        ret.append(toPy(e));
+    }
+    return ret;
 }
 
 } // namespace cards

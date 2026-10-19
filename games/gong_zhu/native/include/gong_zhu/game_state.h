@@ -8,12 +8,12 @@ namespace cards {
 namespace gong_zhu {
 
 struct GameSettings {
-	std::string spectatorPolicy = "disallowed";
-	int64_t     losingThreshold = -1000;
-	bool        expose3 = false;
-	bool        zhuYangManJuan = false;
-	bool        allowCustomSeed = false;
-	int64_t     customSeed = 0;
+    std::string spectatorPolicy = "disallowed";
+    int64_t     losingThreshold = -1000;
+    bool        expose3 = false;
+    bool        zhuYangManJuan = false;
+    bool        allowCustomSeed = false;
+    int64_t     customSeed = 0;
 };
 
 enum class GameState : uint8_t {

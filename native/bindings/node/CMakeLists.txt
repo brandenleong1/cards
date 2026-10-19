@@ -1,11 +1,11 @@
 execute_process(
-	COMMAND node -p "require('node-addon-api').include"
-	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-	OUTPUT_VARIABLE NODE_ADDON_API_DIR
+    COMMAND node -p "require('node-addon-api').include"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE NODE_ADDON_API_DIR
 )
 string(REGEX REPLACE "[\r\n\"]" "" NODE_ADDON_API_DIR "${NODE_ADDON_API_DIR}")
 if(NOT NODE_ADDON_API_DIR)
-	message(FATAL_ERROR "node-addon-api not found — run `npm install` in the project root first")
+    message(FATAL_ERROR "node-addon-api not found — run `npm install` in the project root first")
 endif()
 message(STATUS "node-addon-api include dir: ${NODE_ADDON_API_DIR}")
 

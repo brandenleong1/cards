@@ -1,170 +1,170 @@
 #game-gui-game-state {
-	position: sticky;
-	bottom: 0;
-	left: 0;
-	height: 0;
-	width: fit-content;
-	translate: 0 -1em;
-	color: var(--color_yellow);
-	font-size: 0.8em;
-	font-weight: bold;
-	text-shadow: 0 0 10px var(--color_black), 0 0 10px var(--color_black), 0 0 10px var(--color_black);
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    height: 0;
+    width: fit-content;
+    translate: 0 -1em;
+    color: var(--color_yellow);
+    font-size: 0.8em;
+    font-weight: bold;
+    text-shadow: 0 0 10px var(--color_black), 0 0 10px var(--color_black), 0 0 10px var(--color_black);
 }
 
 #game-gui-hands {
-	display: grid;
-	grid-template-columns: repeat(8, max-content);
-	grid-template-rows: repeat(4, auto);
-	row-gap: 5px;
+    display: grid;
+    grid-template-columns: repeat(8, max-content);
+    grid-template-rows: repeat(4, auto);
+    row-gap: 5px;
 }
 
 #game-gui-hands > div {
-	align-items: center;
-	column-gap: 15px;
-	display: grid;
-	grid-column: 1 / -1;
-	grid-template-columns: subgrid;
-	position: relative;
-	font-size: 1.2em;
-	line-height: 1.4em;
-	height: calc(2.4em + 10px);
-	padding: 5px 0;
+    align-items: center;
+    column-gap: 15px;
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    position: relative;
+    font-size: 1.2em;
+    line-height: 1.4em;
+    height: calc(2.4em + 10px);
+    padding: 5px 0;
 }
 
 #game-gui-hands > div::before {
-	content: '';
-	grid-column: 3 / -1;
-	border-radius: 5px;
-	background-color: var(--color_white);
-	opacity: 0.1;
-	height: 100%;
-	width: calc(100% + 10px);
-	position: absolute;
-	justify-self: center;
+    content: '';
+    grid-column: 3 / -1;
+    border-radius: 5px;
+    background-color: var(--color_white);
+    opacity: 0.1;
+    height: 100%;
+    width: calc(100% + 10px);
+    position: absolute;
+    justify-self: center;
 }
 
 #game-gui-hands > div > * {
-	line-height: 1;
-	padding: 2px;
-	/* min-height: calc(100% - 4px); */
-	border-radius: 5px;
-	display: flex;
-	align-items: center;
-	width: fit-content;
+    line-height: 1;
+    padding: 2px;
+    /* min-height: calc(100% - 4px); */
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    width: fit-content;
 }
 
 #game-gui-hands > div :nth-child(5).not-empty,
 #game-gui-hands > div :nth-child(7).not-empty,
 #game-gui-hands > div :nth-child(8).not-empty {
-	background-color: rgba(255, 255, 255, 0.2);
+    background-color: rgba(255, 255, 255, 0.2);
 }
 
 #game-gui-shown-cards {
-	display: flex;
-	align-items: center;
-	column-gap: 5px;
+    display: flex;
+    align-items: center;
+    column-gap: 5px;
 }
 
 #game-gui-shown-cards::before {
-	content: 'Shown:';
-	font-size: 0.8em;
-	padding-right: 10px;
+    content: 'Shown:';
+    font-size: 0.8em;
+    padding-right: 10px;
 }
 
 #game-gui-shown-cards > div {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 #game-gui-shown-cards > div :nth-child(1) {
-	font-size: 3em;
+    font-size: 3em;
 }
 
 #game-gui-shown-cards > div :nth-child(2) {
-	font-size: 0.6em;
+    font-size: 0.6em;
 }
 
 #game-gui-hands-self-wrapper {
-	position: sticky;
-	bottom: 0;
-	width: max-content;
-	height: max-content;
+    position: sticky;
+    bottom: 0;
+    width: max-content;
+    height: max-content;
     min-width: 100%;
-	overflow: visible;
-	display: flex;
-	justify-content: center;
+    overflow: visible;
+    display: flex;
+    justify-content: center;
 }
 
 #game-gui-hands-self-wrapper::after {
-	content: "";
-	position: absolute;
-	inset: 0;
-	z-index: -1;
-	backdrop-filter: blur(8px);
-	mask: linear-gradient(to bottom, transparent, white 16px),
-			linear-gradient(to top, transparent, white 16px),
-			linear-gradient(to left, transparent, white 16px),
-			linear-gradient(to right, transparent, white 16px);
-	 mask-composite: intersect;
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    backdrop-filter: blur(8px);
+    mask: linear-gradient(to bottom, transparent, white 16px),
+            linear-gradient(to top, transparent, white 16px),
+            linear-gradient(to left, transparent, white 16px),
+            linear-gradient(to right, transparent, white 16px);
+     mask-composite: intersect;
 }
 
 #game-gui-hands-self {
-	display: flex;
-	height: max-content;
-	text-align: center;
-	column-gap: 5px;
+    display: flex;
+    height: max-content;
+    text-align: center;
+    column-gap: 5px;
 }
 
 #game-gui-hands-self > div :nth-child(1) {
-	font-size: 0.8em;
-	opacity: 0.8;
+    font-size: 0.8em;
+    opacity: 0.8;
 }
 
 #game-gui-hands-self > div :nth-child(2) {
-	font-size: 4em;
-	line-height: 1em;
-	background-color: white;
-	border-radius: 4px;
+    font-size: 4em;
+    line-height: 1em;
+    background-color: white;
+    border-radius: 4px;
 }
 
 #game-gui-hands-self > .unplayable {
-	opacity: 0.5;
+    opacity: 0.5;
 }
 
 /* #game-gui-hands-self > :not(.unplayable) {
-	translate: 0 -20px;
+    translate: 0 -20px;
 } */
 
 #game-gui-limit-count {
-	color: var(--color_red);
+    color: var(--color_red);
 }
 
 #game-gui-leaderboard {
-	display: grid;
-	grid-template-columns: repeat(4, max-content);
-	grid-template-rows: repeat(4, auto);
-	row-gap: 16px;
+    display: grid;
+    grid-template-columns: repeat(4, max-content);
+    grid-template-rows: repeat(4, auto);
+    row-gap: 16px;
 }
 
 #game-gui-leaderboard > div {
-	align-items: center;
-	column-gap: 15px;
-	display: grid;
-	grid-column: 1 / -1;
-	grid-template-columns: subgrid;
-	position: relative;
-	line-height: 1.2em;
+    align-items: center;
+    column-gap: 15px;
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    position: relative;
+    line-height: 1.2em;
 }
 
 #game-gui-leaderboard > div::before {
-	content: '';
-	grid-column: 2 / -1;
-	border-radius: 5px;
-	background-color: white;
-	opacity: 0.1;
-	height: calc(100% + 10px);
-	width: calc(100% + 20px);
-	position: absolute;
-	justify-self: center;
+    content: '';
+    grid-column: 2 / -1;
+    border-radius: 5px;
+    background-color: white;
+    opacity: 0.1;
+    height: calc(100% + 10px);
+    width: calc(100% + 20px);
+    position: absolute;
+    justify-self: center;
 }

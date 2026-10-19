@@ -6,10 +6,10 @@
 namespace cards {
 
 struct Message {
-	std::string     content;
-	bool            toAll;
+    std::string     content;
+    bool            toAll;
 
-	Message(std::string content = "", bool toAll = true);
+    Message(std::string content = "", bool toAll = true);
 };
 
 } // namespace cards

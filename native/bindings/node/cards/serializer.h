@@ -24,11 +24,11 @@ Napi::Array toJs(Napi::Env env, const std::tuple<Card, uint8_t>& pair);
 
 template <typename T>
 Napi::Array toJs(Napi::Env env, const std::vector<T>& v) {
-	Napi::Array ret = Napi::Array::New(env, v.size());
-	for (uint32_t i = 0; i < v.size(); i++) {
-		ret.Set(i, toJs(env, v[i]));
-	}
-	return ret;
+    Napi::Array ret = Napi::Array::New(env, v.size());
+    for (uint32_t i = 0; i < v.size(); i++) {
+        ret.Set(i, toJs(env, v[i]));
+    }
+    return ret;
 }
 
 Card cardFromJs(Napi::Value value);
