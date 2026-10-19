@@ -685,7 +685,7 @@ class MultiAgentEnv:
 
         new_state = self._latest_state[stream]
         if prev_state is not None and new_state is not None and len(self._episode_rewards[stream]) > 0:
-            reward = self.get_reward_from_state_transition(prev_state, new_state, seat)
+            reward = self.get_reward_from_state_transition(prev_state, new_state)
             self._episode_rewards[stream][-1] += reward
 
     def action_to_commands(self, action: torch.Tensor, observation: dict, seat: int) -> list[str]:
@@ -1077,7 +1077,10 @@ class MultiAgentEnv:
                     dtype = np.int8
                 )
 
-        state = partial_state | {'play_history': self._play_history[ws_idx], 'leader_history': self._leader_history[ws_idx]}
+        state = partial_state | {
+            'play_history':     np.roll(self._play_history[ws_idx],     -turn_idx, axis = 1),
+            'leader_history':   np.roll(self._leader_history[ws_idx],   -turn_idx, axis = 1)
+        }
 
         self._latest_observation[ws_idx] = observation
         self._latest_state[ws_idx] = state
@@ -1205,18 +1208,18 @@ class MultiAgentEnv:
         return {
             'game_state':       game_state,
             'hand':             hand,
-            'scores':           scores,
-            'current_trick':    current_trick,
-            'collected_cards':  collected_cards,
-            'exposed':          exposed
+            'scores':           np.roll(scores,             -turn_idx, axis = 0),
+            'current_trick':    np.roll(current_trick,      -turn_idx, axis = 0),
+            'collected_cards':  np.roll(collected_cards,    -turn_idx, axis = 0),
+            'exposed':          np.roll(exposed,            -turn_idx, axis = 0)
         }
 
     @staticmethod
-    def get_value_from_state(state: dict[str, np.ndarray], turn_idx: int) -> float:
-        return state['scores'][turn_idx] - np.mean(state['scores'])
+    def get_value_from_state(state: dict[str, np.ndarray]) -> float:
+        return state['scores'][0] - np.mean(state['scores'])
 
-    def get_reward_from_state_transition(self, old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray], turn_idx: int) -> float:
-        raw_reward = MultiAgentEnv.get_value_from_state(new_state, turn_idx) - MultiAgentEnv.get_value_from_state(old_state, turn_idx)
+    def get_reward_from_state_transition(self, old_state: dict[str, np.ndarray], new_state: dict[str, np.ndarray]) -> float:
+        raw_reward = MultiAgentEnv.get_value_from_state(new_state) - MultiAgentEnv.get_value_from_state(old_state)
         return raw_reward * self.reward_scale
 
     @staticmethod
