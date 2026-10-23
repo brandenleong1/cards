@@ -413,7 +413,7 @@ class MultiAgentEnv:
         self.timesteps_per_batch: int =             getattr(self.args, 'timesteps_per_batch', 2 ** 16)
         self.max_timesteps_per_episode: int =       200
 
-        self.reward_scale: float =                  1.0 / 10
+        self.reward_scale: float =                  1.0 / 100
         self.opponent_temperature: float =          0.05
 
         # PPO Parameters
@@ -771,7 +771,7 @@ class MultiAgentEnv:
             for seat in range(self.num_agents):
                 self.get_observation(env, env_idx, seat)
 
-        env.apply_command(0, 'DEAL')
+        self.apply_command(env, env_idx, 0, 'DEAL')
         for seat in range(self.num_agents):
             self.get_observation(env, env_idx, seat)
 
@@ -788,7 +788,7 @@ class MultiAgentEnv:
         for seat in range(self.num_agents):
             self.get_observation(env, 0, seat)
 
-        env.apply_command(0, 'DEAL')
+        self.apply_command(env, 0, 0, 'DEAL')
         for seat in range(self.num_agents):
             self.get_observation(env, 0, seat)
 
@@ -809,7 +809,7 @@ class MultiAgentEnv:
                 actions, log_probs, inputs, mask = self.get_action(seat, module_type, actor = self.eval_actors[seat])
 
             for command in self.action_to_commands(actions[0], self._latest_observation[seat], seat):
-                env.apply_command(seat, command)
+                self.apply_command(env, 0, seat, command)
 
             for observed_seat in range(self.num_agents):
                 self.get_observation(env, 0, observed_seat)
@@ -877,9 +877,19 @@ class MultiAgentEnv:
                     recorded += 1
 
                 for command in self.action_to_commands(actions[i], self._latest_observation[stream], seat):
-                    env.apply_command(seat, command)
+                    self.apply_command(env, stream // self.num_agents, seat, command)
 
         return recorded
+
+    def apply_command(self, env: NativeEnv, env_idx: int, seat: int, command: str) -> int:
+        status, messages = env.apply_command(seat, command)
+        self.broadcast_console_messages(env_idx, seat, messages)
+        return status
+
+    def broadcast_console_messages(self, env_idx: int, seat: int, messages: list[dict[str, Any]]) -> None:
+        for observer in range(self.num_agents):
+            console = [message['msg'] for message in messages if message['toAll'] or observer == seat]
+            self.update_latest_from_console_observation(console, env_idx * self.num_agents + observer)
 
     def get_trajectories(self) -> dict[str, list]:
         training_idxs = [i for i in range(self.num_streams) if self._opponent_actors[i] is None]
@@ -1277,8 +1287,6 @@ class MultiAgentEnv:
         eps = 1e-9
 
         batch_advantages, batch_returns =   self.compute_gaes(trajectories)     # (B,), (B,)
-        batch_returns = (batch_returns - batch_returns.mean()) / (batch_returns.std() + eps)
-        batch_returns = torch.clamp(batch_returns, -10, 10)
 
         batch_state_dicts =     [
                                     state for stream in trajectories['states']
@@ -1354,7 +1362,6 @@ class MultiAgentEnv:
                 mini_batch_log_probs =      batch_log_probs[mini_batch_indices]
                 mini_batch_advantages =     batch_advantages[mini_batch_indices]
                 mini_batch_returns =        batch_returns[mini_batch_indices]
-                mini_batch_values_old =     batch_values_old[mini_batch_indices]
                 mini_batch_show_mask =      show_mask[mini_batch_indices]
                 mini_batch_play_mask =      play_mask[mini_batch_indices]
 
@@ -1389,10 +1396,7 @@ class MultiAgentEnv:
 
                 actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * mini_batch_entropy
 
-                values_clipped = mini_batch_values_old + torch.clamp(mini_batch_values_new - mini_batch_values_old, -self.clip_epsilon, self.clip_epsilon)
-                critic_loss_unclipped = F.huber_loss(mini_batch_values_new, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
-                critic_loss_clipped = F.huber_loss(values_clipped, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
-                critic_loss_per_sample = torch.max(critic_loss_unclipped, critic_loss_clipped)
+                critic_loss_per_sample = F.huber_loss(mini_batch_values_new, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
                 critic_loss = critic_loss_per_sample.mean()
 
                 if mini_batch_show_mask.any():
@@ -1435,6 +1439,7 @@ class MultiAgentEnv:
             if play_mask.any():
                 play_explained_variance = 1 - ((batch_returns[play_mask] - predicted_values[play_mask]).var() / (batch_returns[play_mask].var() + eps)).item()
             explained_variance = 1 - ((batch_returns - predicted_values).var() / (batch_returns.var() + eps))
+            fresh_explained_variance = 1 - ((batch_returns - batch_values_old).var() / (batch_returns.var() + eps))
 
         self.training_history.setdefault('batch', []).append(self.batch_num)
         self.training_history.setdefault('actor_loss', []).append(actor_losses[-1])
@@ -1463,6 +1468,7 @@ class MultiAgentEnv:
             print(f'  Mean Entropy: {np.mean(entropy_values):.4f}', file = f)
             print(f'  Mean Clip Fraction: {np.mean(clip_fractions):.4f}', file = f)
             print(f'  Explained Variance: {explained_variance:.4f}', file = f)
+            print(f'  Fresh Explained Variance: {fresh_explained_variance:.4f}', file = f)
             print(f'  Return range: [{batch_returns.min().item():.2f}, {batch_returns.max().item():.2f}]', file = f)
             print(f'  Episode rewards: min={min(all_episode_rewards):.1f}, max={max(all_episode_rewards):.1f}, mean={np.mean(all_episode_rewards):.1f}', file = f)
             print(f'', file = f)
