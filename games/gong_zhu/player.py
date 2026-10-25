@@ -647,7 +647,7 @@ class MultiAgentEnv:
                 self._opponent_actors[stream] = actor_cache[path]
                 selected_counts[path] = selected_counts.get(path, 0) + 1
 
-        log_lines = [f'Selected model [{path}] as opponent (x{count})' for path, count in selected_counts.items()]
+        log_lines = [f'Selected model [{path}] as opponent (x{selected_counts[path]})' for path in model_paths if path in selected_counts.keys()]
 
         if log_path is not None:
             with open(log_path, 'a') as f:
