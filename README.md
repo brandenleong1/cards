@@ -31,6 +31,8 @@ To automatically build and configure the C++ native core, Python environment, an
 
 To specify a C++ compiler of choice, use `--clang` or `--gcc`, or set `CARDS_COMPILER` environment variable.
 
+For development mode (generate full LSP support), use `--dev`.
+
 #### Manual Build
 
 For only building the server, run `npm install && npm run build:native`.

@@ -11,11 +11,13 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 cd "$SCRIPT_DIR"
 
 REQUESTED="${CARDS_COMPILER:-}"
+DEV=0
 for arg in "$@"; do
     case "$arg" in
         --clang) REQUESTED=clang ;;
         --gcc) REQUESTED=gcc ;;
-        *) echo "Error: unknown argument '$arg' (expected --clang or --gcc)." >&2; exit 1 ;;
+        --dev) DEV=1 ;;
+        *) echo "Error: unknown argument '$arg' (expected --clang, --gcc, or --dev)." >&2; exit 1 ;;
     esac
 done
 
@@ -79,11 +81,20 @@ VENV_PYTHON="$VENV_DIR/bin/python"
 echo "Upgrading pip..."
 "$VENV_PYTHON" -m pip install --upgrade pip
 
-echo "Installing Python requirements..."
+echo "Installing Python build requirements..."
 "$VENV_PYTHON" -m pip install -r "$SCRIPT_DIR/requirements.txt"
 
-echo "Installing native module (gong_zhu_native)..."
+if [ "$DEV" -eq 1 ]; then
+    "$VENV_PYTHON" -m pip install -r "$SCRIPT_DIR/requirements-dev.txt"
+fi
+
+echo "Installing Python modules..."
 "$VENV_PYTHON" -m pip install --no-build-isolation -e "$SCRIPT_DIR"
+
+if [ "$DEV" -eq 1 ]; then
+    echo "Generating type stubs for the native module..."
+    "$VENV_PYTHON" -m pybind11_stubgen cards.gong_zhu -o "$SCRIPT_DIR/typings"
+fi
 
 if ! command -v npm &> /dev/null; then
     echo "Error: npm not found; install Node.js (>=22) to build the server's native addon." >&2

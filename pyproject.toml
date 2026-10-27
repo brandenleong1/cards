@@ -1,13 +1,19 @@
 [build-system]
-requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "cards"
-version = "0.0.1"
-description = "Card game rules cores (C++ via pybind11)"
+version = "0.0.2"
+description = "Card game rule cores (C++ via pybind11) + training"
 requires-python = ">=3.10"
 license = "MIT"
+dependencies = [
+    "numpy>=2.3.2",
+    "torch>=2.14,<2.15",
+    "tqdm==4.67.1",
+    "websockets==15.0.1",
+]
 
 [tool.scikit-build]
 cmake.version = ">=3.16"
@@ -19,3 +25,4 @@ editable.rebuild = true
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+reportMissingModuleSource = false

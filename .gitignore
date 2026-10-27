@@ -6,5 +6,6 @@ package-lock.json
 **/__pycache__/
 **/*.swp
 build/
+typings/
 *.node
 tags.*
