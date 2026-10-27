@@ -4,7 +4,6 @@ import argparse
 import copy
 import enum
 import gc
-import glob
 import itertools as it
 import json
 import math
@@ -12,7 +11,6 @@ import os
 import random
 import re
 import sys
-import tempfile
 import time
 import traceback
 import warnings
@@ -25,6 +23,11 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from typing import TYPE_CHECKING, Any, cast
+
+from cards.rl.eval.elo_rating import EloRatingSystem
+from cards.rl.nn.blocks import TrickSequenceEncoder
+from cards.rl import checkpoint_io
+from cards.rl import torch_utils
 
 try:
     from cards import gong_zhu
@@ -90,37 +93,6 @@ class BotConnection(ClientConnection):
         self.session_id: str | None =   None
         self.username: str | None =     None
         self.connected: bool =          False
-
-class TrickSequenceEncoder(torch.nn.Module):
-    def __init__(self, hidden_dim: int = 128, num_gru_layers: int = 1) -> None:
-        super().__init__()
-
-        self.hidden_dim = hidden_dim
-        self.proj = torch.nn.LazyLinear(hidden_dim)
-        self.gru = torch.nn.GRU(hidden_dim, hidden_dim, num_layers = num_gru_layers, batch_first = True)
-
-    def forward(self, play_history: torch.Tensor, leader_history: torch.Tensor) -> torch.Tensor:
-        # play_history:         (B, T, P, C)
-        # leader_history.shape: (B, T, P)
-
-        B, T, P, C = play_history.shape
-
-        # (B, T, P * C + P)
-        tricks = torch.concatenate([
-            play_history.reshape(B, T, P * C),
-            leader_history
-        ], dim = -1)
-
-        tricks_active = tricks.abs().sum(dim = -1) > 0          # (B, T)
-        lengths = tricks_active.sum(dim = 1).clamp(min = 1)     # (B, )
-
-        tricks = torch.relu(self.proj(tricks))                  # (B, T, hidden_dim)
-        outputs, _ = self.gru(tricks)                           # (B, T, hidden_dim)
-
-        idx = (lengths - 1).unsqueeze(-1).unsqueeze(-1).expand(-1, 1, self.hidden_dim)
-        last_output = outputs.gather(1, idx).squeeze(1)         # (B, hidden_dim)
-
-        return last_output
 
 class ActorNN(torch.nn.Module):
     def __init__(
@@ -371,7 +343,7 @@ class MultiAgentEnv:
 
         self.args = args if args is not None else argparse.Namespace()
 
-        self.device: torch.device = MultiAgentEnv.resolve_device(getattr(self.args, 'device', 'auto'))
+        self.device: torch.device = torch_utils.resolve_device(getattr(self.args, 'device', 'auto'))
 
         self._init_hyperparameters()
 
@@ -491,38 +463,10 @@ class MultiAgentEnv:
     def set_mode(self, mode: MultiAgentEnv.ModelModes) -> None:
         self.mode = mode
 
-    @staticmethod
-    def resolve_device(pref: str | None) -> torch.device:
-        if pref is None or pref == 'auto':
-            if torch.cuda.is_available():
-                return torch.device('cuda')
-            if getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():
-                return torch.device('mps')
-            return torch.device('cpu')
-        return torch.device(pref)
-
     def compile_models(self) -> None:
         dummy = {k: v.to(self.device) for k, v in MultiAgentEnv.get_dummy_state().items()}
         dummy_mask = torch.ones(1, GAME_SETTINGS['NUM_CARDS'], device = self.device)
-        with torch.no_grad():
-            self.actor['SHOW'](dummy, dummy_mask)
-            self.actor['PLAY'](dummy, dummy_mask)
-            self.critic(dummy)
-
-        try:
-            self.critic = cast(torch.nn.Module, torch.compile(self.critic, dynamic = True))
-            for module_type in ('SHOW', 'PLAY'):
-                actor_module = self.actor[module_type]
-                setattr(actor_module, 'evaluate_actions', torch.compile(actor_module.evaluate_actions, dynamic = True))
-        except Exception as e:
-            print(f'torch.compile failed: {e}', file = sys.stderr)
-            try:
-                response = input('Continue in eager mode (no compile)? [y/N]: ').strip().lower()
-            except EOFError:
-                response = ''
-            if response not in ('y', 'yes'):
-                sys.exit(1)
-            print('Continuing in eager mode (torch.compile disabled).', file = sys.stderr)
+        self.critic, _ = torch_utils.compile_models(self.actor, self.critic, dummy, dummy_mask)
 
     def critic_values(self, states: dict[str, torch.Tensor]) -> torch.Tensor:
         n = next(iter(states.values())).shape[0]
@@ -543,61 +487,31 @@ class MultiAgentEnv:
         return CriticNN((2048, 1024, 512, 256, 128), (1028, 512, 256), 256, 2)
 
     def save_checkpoint(self, file_name: str | None = None) -> None:
-        checkpoint = {
-            'batch_num': self.batch_num,
-            'actor_state_dict': getattr(self.actor, '_orig_mod', self.actor).state_dict(),
-            'critic_state_dict': getattr(self.critic, '_orig_mod', self.critic).state_dict(),
-            'training_history': self.training_history
-        }
-
         if file_name is None:
             file_name = f'gong_zhu_player_{self.batch_num}.pt'
 
-        path = os.path.join(self.args.model_dir, file_name)
-
-        os.makedirs(self.args.model_dir, exist_ok = True)
-
-        fd, tmp_path = tempfile.mkstemp(dir = self.args.model_dir, suffix = '.pt.tmp')
-
-        try:
-            os.close(fd)
-            torch.save(checkpoint, tmp_path)
-            os.replace(tmp_path, path)
-            print(f'Saved checkpoint at [{os.path.abspath(path)}]')
-        except BaseException:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        checkpoint_io.save_checkpoint(
+            os.path.join(self.args.model_dir, file_name), self.actor, self.critic,
+            batch_num = self.batch_num,
+            training_history = self.training_history
+        )
 
     def load_checkpoint(self, path: str) -> None:
-        checkpoint = torch.load(path, weights_only = False, map_location = self.device)
+        checkpoint = checkpoint_io.load_checkpoint(path, self.device)
 
         self.batch_num = checkpoint['batch_num']
-        getattr(self.actor, '_orig_mod', self.actor).load_state_dict(checkpoint['actor_state_dict'])
-        getattr(self.critic, '_orig_mod', self.critic).load_state_dict(checkpoint['critic_state_dict'])
+        torch_utils.unwrap(self.actor).load_state_dict(checkpoint['actor_state_dict'])
+        torch_utils.unwrap(self.critic).load_state_dict(checkpoint['critic_state_dict'])
         self.training_history = checkpoint['training_history']
         print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
-        # for name, param in self.actor.named_parameters():
-        #   print(f"* self.actor - {name}: {param.shape}")
-        # for name, param in self.critic.named_parameters():
-        #   print(f"* self.critic - {name}: {param.shape}")
 
     def load_actor_from_checkpoint(self, model_path: str) -> ActorDict:
-        actor = self.create_actor()
-
-        checkpoint = torch.load(model_path, weights_only = False, map_location = self.device)
-
-        # Init Lazy Modules
-        dummy_input = MultiAgentEnv.get_dummy_state()
-        dummy_mask = torch.ones(1, GAME_SETTINGS['NUM_CARDS'])
-
-        with torch.no_grad():
-            actor['SHOW'](dummy_input, dummy_mask)
-            actor['PLAY'](dummy_input, dummy_mask)
-
-        actor.load_state_dict(checkpoint['actor_state_dict'])
-        actor.eval()
-
-        return actor.to(self.device)
+        actor = checkpoint_io.load_actor(
+            model_path, self.create_actor,
+            MultiAgentEnv.get_dummy_state(), torch.ones(1, GAME_SETTINGS['NUM_CARDS']),
+            self.device
+        )
+        return cast(ActorDict, actor)
 
     def get_opponent_sampling_weights(self, model_paths: list[str]) -> np.ndarray:
         n = len(model_paths)
@@ -613,7 +527,7 @@ class MultiAgentEnv:
     def load_opponent_models(self) -> None:
         self._opponent_actors = [None for _ in range(self.num_streams)]
 
-        model_paths = self.get_models_in_directory(self.args.model_dir)
+        model_paths = checkpoint_io.list_checkpoints(self.args.model_dir)
         model_paths = [path for path in model_paths if os.path.basename(path) != 'latest_model.pt']
 
         if len(model_paths) == 0:
@@ -808,7 +722,7 @@ class MultiAgentEnv:
             with torch.no_grad():
                 actions, log_probs, inputs, mask = self.get_action(seat, module_type, actor = self.eval_actors[seat])
 
-            for command in self.action_to_commands(actions[0], self._latest_observation[seat], seat):
+            for command in self.action_to_commands(actions[0], self.latest_observation(seat), seat):
                 self.apply_command(env, 0, seat, command)
 
             for observed_seat in range(self.num_agents):
@@ -876,7 +790,7 @@ class MultiAgentEnv:
                     self._episode_ts[stream] += 1
                     recorded += 1
 
-                for command in self.action_to_commands(actions[i], self._latest_observation[stream], seat):
+                for command in self.action_to_commands(actions[i], self.latest_observation(stream), seat):
                     self.apply_command(env, stream // self.num_agents, seat, command)
 
         return recorded
@@ -1558,18 +1472,6 @@ class MultiAgentEnv:
 
         return torch.tensor(np.concatenate(all_advantages, axis = 0)), torch.tensor(np.concatenate(all_returns, axis = 0))
 
-    def get_models_in_directory(self, model_dir: str) -> list[str]:
-        model_dir = os.path.abspath(model_dir)
-
-        patterns = ['*.pt', '*.pth']
-        model_files = []
-        for pattern in patterns:
-            model_files.extend(glob.glob(os.path.join(model_dir, pattern)))
-
-        int_aware_key = lambda path: [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', os.path.basename(path))]
-
-        return sorted(model_files, key = int_aware_key)
-
     def load_models(self, model_paths: list[str]) -> None:
         assert len(model_paths) == self.num_agents
 
@@ -1578,7 +1480,7 @@ class MultiAgentEnv:
             self.eval_model_paths[ws_idx] = model_path
 
     async def eval(self) -> None:
-        model_paths = self.get_models_in_directory(self.args.model_dir)
+        model_paths = checkpoint_io.list_checkpoints(self.args.model_dir)
 
         if len(model_paths) < self.num_agents:
             print(f'Not enough models found in directory [{os.path.abspath(self.args.model_dir)}] ({len(model_paths)} < {self.num_agents})')
@@ -1677,116 +1579,6 @@ class MultiAgentEnv:
                 warnings.warn(f'Failed to save rating for [{model_path}]: {e}')
 
         print(f'Saved ELO ratings for {saved_ratings_count} / {len(self.elo_rating_system.ratings)} models')
-
-class EloRatingSystem:
-
-    def __init__(self, k_factor: float = 32.0, initial_rating: float = 1500.0) -> None:
-        self.k_factor =                             k_factor
-        self.initial_rating =                       initial_rating
-        self.ratings: dict[str, float] =            {}
-        self.games_played: dict[str, int] =     {}
-        self.history: list[dict] =                  []
-
-    def reset_all_ratings(self, model_paths: list[str]) -> None:
-        for model_path in model_paths:
-            model_path = os.path.abspath(model_path)
-            self.ratings[model_path] = self.initial_rating
-            self.games_played[model_path] = 0
-
-            self.save_rating(model_path)
-
-        self.history.clear()
-
-    def get_rating(self, model_path: str) -> float:
-        model_path = os.path.abspath(model_path)
-
-        if model_path not in self.ratings.keys():
-            self.load_rating(model_path)
-
-        return self.ratings[model_path]
-
-    def load_rating(self, model_path: str) -> None:
-        model_path = os.path.abspath(model_path)
-        try:
-            checkpoint = torch.load(model_path, weights_only = False, map_location = 'cpu')
-            self.ratings[model_path] = checkpoint.get('elo_rating', self.initial_rating)
-            self.games_played[model_path] = checkpoint.get('elo_games_played', 0)
-        except Exception as e:
-            warnings.warn(f'Could not load rating from [{model_path}]: {e}')
-            return None
-
-    def save_rating(self, model_path: str) -> None:
-        model_path = os.path.abspath(model_path)
-        try:
-            checkpoint = torch.load(model_path, weights_only = False, map_location = 'cpu')
-            checkpoint['elo_rating'] = self.ratings[model_path]
-            checkpoint['elo_games_played'] = self.games_played[model_path]
-
-            fd, tmp_path = tempfile.mkstemp(dir = os.path.dirname(model_path), suffix = '.pt.tmp')
-            try:
-                os.close(fd)
-                torch.save(checkpoint, tmp_path)
-                os.replace(tmp_path, model_path)
-            except BaseException:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                raise
-        except Exception as e:
-            warnings.warn(f'Could not save rating to [{model_path}]: {e}')
-
-    def get_expected_score(self, rating_a: float, rating_b: float, scale: float = 400.0) -> float:
-        return 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / scale))
-
-    def get_actual_score(self, final_score_a: float, final_score_b, scale: float = 200.0) -> float:
-        return 1.0 / (1.0 + 10.0 ** ((final_score_b - final_score_a) / scale))
-
-    def update_ratings(self, model_paths: list[str], final_scores: list[float]) -> dict[str, float]:
-        model_paths = [os.path.abspath(p) for p in model_paths]
-
-        assert len(model_paths) == len(final_scores)
-
-        n = len(model_paths)
-
-        current_ratings: list[float] = [self.get_rating(path) for path in model_paths]
-        rating_changes: dict[str, list[float]] = {path: [] for path in model_paths}
-
-        for i in range(n):
-            expected_total: float = 0.0
-            actual_total: float = 0.0
-
-            for j in range(n):
-                if i == j:
-                    continue
-
-                expected_ij = self.get_expected_score(current_ratings[i], current_ratings[j])
-                expected_total += expected_ij
-
-                actual_ij = self.get_actual_score(final_scores[i], final_scores[j])
-                actual_total += actual_ij
-
-            expected_normalized = expected_total / (n - 1)
-            actual_normalized = actual_total / (n - 1)
-
-            change = self.k_factor * (actual_normalized - expected_normalized)
-            rating_changes[model_paths[i]].append(change)
-
-        final_changes = {}
-        for model_path in set(model_paths):
-            changes = rating_changes[model_path]
-            average_change = sum(changes) / len(changes)
-            self.ratings[model_path] += average_change
-            self.games_played[model_path] += 1
-            final_changes[model_path] = average_change
-
-        return final_changes
-
-    def get_leaderboard(self) -> list[tuple[str, float, int]]:
-        leaderboard = [
-            (path, self.ratings[path], self.games_played.get(path, 0))
-            for path in self.ratings.keys()
-        ]
-
-        return sorted(leaderboard, key = lambda x: x[1], reverse = True)
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
