@@ -126,8 +126,9 @@ def load_actor(
     # Fresh actor (eval mode) with the checkpoint's actor weights
     checkpoint = load_checkpoint(source, device)
 
-    actor = create_new_actor()
-    materialize(actor, dummy_state, dummy_mask)
+    with torch.random.fork_rng(devices = []):
+        actor = create_new_actor()
+        materialize(actor, dummy_state, dummy_mask)
 
     actor.load_state_dict(checkpoint['actor_state_dict'])
     actor.eval()
