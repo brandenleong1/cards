@@ -362,6 +362,16 @@ class MultiAgentEnv:
         self._event_queue: list[list[tuple[str | bytes, float]]] =                  [list()             for _ in range(self.num_agents)] # (message, timestamp)
 
 
+        self.actor_registry: checkpoint_io.ModelRegistry[ActorDict] = checkpoint_io.ModelRegistry(
+            loader = lambda source : cast(ActorDict, checkpoint_io.load_actor(
+                source = source,
+                create_new_actor = self.create_actor,
+                dummy_state = MultiAgentEnv.get_dummy_state(),
+                dummy_mask = torch.ones(1, GAME_SETTINGS['NUM_CARDS']),
+                device = self.device
+            ))
+        )
+
         self.training_history: dict[str, list[int | float]] = {}
 
         self.reset()
@@ -506,12 +516,7 @@ class MultiAgentEnv:
         print(f'Loaded checkpoint from [{os.path.abspath(path)}] (at batch {self.batch_num})')
 
     def load_actor_from_checkpoint(self, model_path: str) -> ActorDict:
-        actor = checkpoint_io.load_actor(
-            model_path, self.create_actor,
-            MultiAgentEnv.get_dummy_state(), torch.ones(1, GAME_SETTINGS['NUM_CARDS']),
-            self.device
-        )
-        return cast(ActorDict, actor)
+        return self.actor_registry.get_model(model_path)
 
     def get_opponent_sampling_weights(self, model_paths: list[str]) -> np.ndarray:
         n = len(model_paths)
@@ -546,7 +551,6 @@ class MultiAgentEnv:
         else:
             raise ValueError(f'Unknown opponent_sampling [{self.args.opponent_sampling}]')
 
-        actor_cache: dict[str, ActorDict] = {}
         selected_counts: dict[str, int] = {}
         for env_idx in range(self.num_envs):
             learner = self.learner_seat(env_idx)
@@ -556,9 +560,7 @@ class MultiAgentEnv:
                     self._opponent_actors[stream] = None
                     continue
                 path = np.random.choice(model_paths, p = weights)
-                if path not in actor_cache:
-                    actor_cache[path] = self.load_actor_from_checkpoint(path)
-                self._opponent_actors[stream] = actor_cache[path]
+                self._opponent_actors[stream] = self.actor_registry.get_model(path)
                 selected_counts[path] = selected_counts.get(path, 0) + 1
 
         log_lines = [f'Selected model [{path}] as opponent (x{selected_counts[path]})' for path in model_paths if path in selected_counts.keys()]
