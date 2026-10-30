@@ -16,7 +16,6 @@ from cards.rl.torch_utils import materialize, unwrap
 
 
 T = TypeVar('T')
-U = TypeVar('U')
 
 
 class ModelPath(str):
@@ -30,62 +29,69 @@ class ModelRegistry(Generic[T]):
             return super().__new__(cls, model_id)
 
     @dataclass
-    class ModelInfo(Generic[U]):
+    class ModelInfo:
         path: ModelPath
         mtime_ns: int
         size: int
         model_id: ModelRegistry.ModelId
-        model: U
 
     def __init__(self, loader: Callable[[IO[bytes]], T], max_models: int = 32) -> None:
         if (max_models < 1):
             raise ValueError('Argument [max_models] must be >= 1')
 
-        self._loader: Callable[[IO[bytes]], T] =                                    loader
-        self.max_models: int =                                                      max_models
-        self._model_registry: OrderedDict[ModelPath, ModelRegistry.ModelInfo[T]] =  OrderedDict()
+        self._loader: Callable[[IO[bytes]], T] =                            loader
+        self.max_models: int =                                              max_models
+        self._info_registry: dict[ModelPath, ModelRegistry.ModelInfo] =     {}
+        self._model_registry: OrderedDict[ModelRegistry.ModelId, T] =       OrderedDict()
 
-    def _get_entry(self, model_path: str | os.PathLike[str]) -> ModelRegistry.ModelInfo[T]:
-        model_path = ModelPath(model_path)
+    def _read_file(self, model_path: ModelPath) -> tuple[ModelRegistry.ModelInfo, bytes]:
+        with open(model_path, 'rb') as file:
+            fstat = os.fstat(file.fileno())
+            data = file.read()
+
+        model_id = ModelRegistry.ModelId(hashlib.sha256(data).hexdigest())
+
+        info_entry = self._info_registry[model_path] = ModelRegistry.ModelInfo(
+            path = model_path,
+            mtime_ns = fstat.st_mtime_ns,
+            size = fstat.st_size,
+            model_id = model_id
+        )
+
+        return info_entry, data
+
+    def _get_model_info(self, model_path: ModelPath) -> tuple[ModelRegistry.ModelInfo, bytes | None]:
         file_stats = os.stat(model_path)
-        entry = self._model_registry.get(model_path)
+        info_entry = self._info_registry.get(model_path)
 
-        if entry is not None and (entry.mtime_ns, entry.size) == (file_stats.st_mtime_ns, file_stats.st_size):
-            self._model_registry.move_to_end(model_path)
+        if (info_entry is not None and (info_entry.mtime_ns, info_entry.size) == (file_stats.st_mtime_ns, file_stats.st_size)):
+            return info_entry, None
+        return self._read_file(model_path)
 
-        else:
-            with open(model_path, 'rb') as file:
-                fstat = os.fstat(file.fileno())
-                data = file.read()
-
-                model_id = ModelRegistry.ModelId(hashlib.sha256(data).hexdigest())
-                model = self._loader(io.BytesIO(data))
-
-                new_entry = ModelRegistry.ModelInfo[T](
-                    path = model_path,
-                    mtime_ns = fstat.st_mtime_ns,
-                    size = fstat.st_size,
-                    model_id = model_id,
-                    model = model
-                )
-
-            entry = new_entry
-            self._model_registry[model_path] = entry
-            self._model_registry.move_to_end(model_path)
-
-            while (len(self._model_registry) > self.max_models):
-                self._model_registry.popitem(last = False)
-
-        return entry
-
-
-    def get_id(self, model_path: str | os.PathLike[str]) -> str:
+    def get_id(self, model_path: str | os.PathLike[str]) -> ModelRegistry.ModelId:
         model_path = ModelPath(model_path)
-        return self._get_entry(model_path).model_id
+
+        info_entry, data = self._get_model_info(model_path)
+        return info_entry.model_id
 
     def get_model(self, model_path: str | os.PathLike[str]) -> T:
         model_path = ModelPath(model_path)
-        return self._get_entry(model_path).model
+
+        info_entry, data = self._get_model_info(model_path)
+
+        model_entry = self._model_registry.get(info_entry.model_id)
+        if model_entry is None:
+            if data is None:
+                info_entry, data = self._read_file(model_path)
+
+            model_entry = self._model_registry[info_entry.model_id] = self._loader(io.BytesIO(data))
+
+        self._model_registry.move_to_end(info_entry.model_id)
+
+        while len(self._model_registry) > self.max_models:
+            self._model_registry.popitem(last = False)
+
+        return model_entry
 
 
 def save_checkpoint(path: str, actor: torch.nn.Module, critic: torch.nn.Module, **metadata: Any) -> None:
