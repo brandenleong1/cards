@@ -385,6 +385,8 @@ class MultiAgentEnv:
         self.actor_optimizer: torch.optim.Optimizer | None =    None
         self.critic_optimizer: torch.optim.Optimizer | None =   None
 
+        self.train_total_batches: int =             0
+
         self.elo_rating_system: EloRatingSystem =   EloRatingSystem(k_factor = self.args.k_factor)
         self.eval_games_per_match: int =            20
         self.eval_total_matches: int =              0
@@ -404,8 +406,8 @@ class MultiAgentEnv:
         self.clip_epsilon: float =                  0.2
         self.n_updates_per_batch: int =             8
         self.mini_batch_size: int =                 256
-        self.actor_lr: float =                      2e-5
-        self.critic_lr: float =                     3e-4
+        self.actor_lr: float =                      getattr(self.args, 'actor_lr', 2e-5)
+        self.critic_lr: float =                     getattr(self.args, 'critic_lr', 3e-4)
         self.entropy_coef: float =                  0.01
         self.max_grad_norm: float =                 0.5
         self.huber_loss_delta: float =              2.0
@@ -623,9 +625,12 @@ class MultiAgentEnv:
         gc.freeze()
         gc.disable()
 
-        while True:
+        num_batches = getattr(self.args, 'num_batches', None)
+
+        while num_batches is None or self.train_total_batches < num_batches:
             trajectories = self.rollout_one_batch()
             await self.train_post_rollout(trajectories)
+            self.train_total_batches += 1
 
     def rollout_one_batch(self) -> dict[str, list]:
         if gong_zhu is None:
@@ -1633,6 +1638,18 @@ def parse_arguments() -> argparse.Namespace:
         '--opponent-sampling', type = str,
         choices = ['latest', 'mixed'], default = 'latest',
         help = 'Use latest or mixed checkpoints (if available)'
+    )
+    parser.add_argument(
+        '--actor-lr', type = float, default = 2e-5,
+        help = 'Actor learning rate'
+    )
+    parser.add_argument(
+        '--critic-lr', type = float, default = 3e-4,
+        help = 'Critic learning rate'
+    )
+    parser.add_argument(
+        '--num-batches', type = int, default = None,
+        help = 'Number of batches to train'
     )
     parser.add_argument(
         '--log-file', type = str, default = 'log.txt',
