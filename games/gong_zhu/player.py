@@ -29,6 +29,8 @@ from cards.rl.nn.blocks import TrickSequenceEncoder
 from cards.rl import checkpoint_io
 from cards.rl import torch_utils
 
+from player_cli import parse_arguments, with_defaults
+
 try:
     from cards import gong_zhu
 except ImportError:
@@ -341,16 +343,16 @@ class MultiAgentEnv:
         actor: ActorDict | None = None,
         critic: CriticNN | None = None) -> None:
 
-        self.args = args if args is not None else argparse.Namespace()
+        self.args = with_defaults(args)
 
-        self.device: torch.device = torch_utils.resolve_device(getattr(self.args, 'device', 'auto'))
+        self.device: torch.device = torch_utils.resolve_device(self.args.device)
 
         self._init_hyperparameters()
 
         if mode is None:
             mode = MultiAgentEnv.ModelModes.train
 
-        self.num_envs: int =                                                        getattr(self.args, 'n_workers', 1)
+        self.num_envs: int =                                                        self.args.n_workers
         self.num_agents: int =                                                      GAME_SETTINGS['NUM_PLAYERS']
         self.ws_list: list[BotConnection | None] =                                  [None               for _ in range(self.num_agents)]
 
@@ -379,7 +381,7 @@ class MultiAgentEnv:
         self.actor: ActorDict = (actor if actor is not None else self.create_actor()).to(self.device)
         self.critic: torch.nn.Module = (critic if critic is not None else self.create_critic()).to(self.device)
 
-        if getattr(self.args, 'compile', False):
+        if self.args.compile:
             self.compile_models()
 
         self.actor_optimizer: torch.optim.Optimizer | None =    None
@@ -394,7 +396,7 @@ class MultiAgentEnv:
 
 
     def _init_hyperparameters(self) -> None:
-        self.timesteps_per_batch: int =             getattr(self.args, 'timesteps_per_batch', 2 ** 16)
+        self.timesteps_per_batch: int =             self.args.timesteps_per_batch
         self.max_timesteps_per_episode: int =       200
 
         self.reward_scale: float =                  1.0 / 100
@@ -406,8 +408,8 @@ class MultiAgentEnv:
         self.clip_epsilon: float =                  0.2
         self.n_updates_per_batch: int =             8
         self.mini_batch_size: int =                 256
-        self.actor_lr: float =                      getattr(self.args, 'actor_lr', 2e-5)
-        self.critic_lr: float =                     getattr(self.args, 'critic_lr', 3e-4)
+        self.actor_lr: float =                      self.args.actor_lr
+        self.critic_lr: float =                     self.args.critic_lr
         self.entropy_coef: float =                  0.01
         self.max_grad_norm: float =                 0.5
         self.huber_loss_delta: float =              2.0
@@ -625,9 +627,7 @@ class MultiAgentEnv:
         gc.freeze()
         gc.disable()
 
-        num_batches = getattr(self.args, 'num_batches', None)
-
-        while num_batches is None or self.train_total_batches < num_batches:
+        while self.args.num_batches is None or self.train_total_batches < self.args.num_batches:
             trajectories = self.rollout_one_batch()
             await self.train_post_rollout(trajectories)
             self.train_total_batches += 1
@@ -892,8 +892,8 @@ class MultiAgentEnv:
                     servers = msg['data']
                     for server in servers:
                         if (
-                            hasattr(self.args, 'lobby') and self.args.lobby == server['name'] and
-                            hasattr(self.args, 'host') and self.args.host == server['host']
+                            self.args.lobby == server['name'] and
+                            self.args.host == server['host']
                         ):
                             await ws.send(json.dumps({
                                 'tag': 'joinLobby',
@@ -1493,7 +1493,7 @@ class MultiAgentEnv:
             print(f'Not enough models found in directory [{os.path.abspath(self.args.model_dir)}] ({len(model_paths)} < {self.num_agents})')
             return
 
-        if hasattr(self.args, 'reset_elo') and self.args.reset_elo:
+        if self.args.reset_elo:
             self.elo_rating_system.reset_all_ratings(model_paths)
             self.eval_total_matches = 0
             self.eval_total_games = 0
@@ -1587,132 +1587,6 @@ class MultiAgentEnv:
 
         print(f'Saved ELO ratings for {saved_ratings_count} / {len(self.elo_rating_system.ratings)} models')
 
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        '--url', '-u', type = str, default = 'ws://localhost:8080',
-        help = 'Server URL to connect to'
-    )
-
-    mode_group = parser.add_mutually_exclusive_group(required = True)
-    mode_group.add_argument(
-        '--train', action = 'store_true',
-        help = 'Run training'
-    )
-    mode_group.add_argument(
-        '--infer', action = 'store_true',
-        help = 'Run inference'
-    )
-    mode_group.add_argument(
-        '--eval', action = 'store_true',
-        help = 'Run evaluation'
-    )
-
-    # Training Options
-    parser.add_argument(
-        '--n-workers', '-n', type = int, default = 1,
-        help = 'Number of parallel in-process envs to batch across during rollout'
-    )
-    parser.add_argument(
-        '--timesteps-per-batch', '-t', type = int, default = 2 ** 16,
-        help = 'Rollout batch size'
-    )
-    parser.add_argument(
-        '--seed', type = int, default = None,
-        help = 'Seed random/numpy/torch (+ native deals) for reproducible runs'
-    )
-    parser.add_argument(
-        '--device', type = str, default = 'auto', choices = ['auto', 'cpu', 'cuda', 'mps'],
-        help = 'Compute device (auto = cuda/mps if available else cpu)'
-    )
-    parser.add_argument(
-        '--compile', action = 'store_true',
-        help = 'Use torch.compile'
-    )
-    parser.add_argument(
-        '--model-dir', type = str,
-        help = 'Directory containing/to save model checkpoints'
-    )
-    parser.add_argument(
-        '--opponent-sampling', type = str,
-        choices = ['latest', 'mixed'], default = 'latest',
-        help = 'Use latest or mixed checkpoints (if available)'
-    )
-    parser.add_argument(
-        '--actor-lr', type = float, default = 2e-5,
-        help = 'Actor learning rate'
-    )
-    parser.add_argument(
-        '--critic-lr', type = float, default = 3e-4,
-        help = 'Critic learning rate'
-    )
-    parser.add_argument(
-        '--num-batches', type = int, default = None,
-        help = 'Number of batches to train'
-    )
-    parser.add_argument(
-        '--log-file', type = str, default = 'log.txt',
-        help = 'Name of log file to dump logs to'
-    )
-
-    # Inference Options
-    parser.add_argument(
-        '--model', '-m', type = str,
-        help = 'Model checkpoint to load for inference'
-    )
-    parser.add_argument(
-        '--lobby', type = str,
-        help = 'Lobby name to join for inference'
-    )
-    parser.add_argument(
-        '--host', type = str,
-        help = 'Host name of lobby to join for inference'
-    )
-
-    # Evaluation Options
-    parser.add_argument(
-        '--k-factor', type = float, default = 32.0,
-        help = 'K-Factor for Elo calculation'
-    )
-    parser.add_argument(
-        '--reset-elo', action = 'store_true',
-        help = 'Reset Elo ratings for all models before starting evaluation'
-    )
-
-    args = parser.parse_args()
-
-    if args.train:
-        if args.n_workers < 1:
-            parser.error(f'--n-workers must be >= 1 (got {args.n_workers})')
-        if args.model_dir is None:
-            parser.error('--train requires --model-dir to be specified')
-        if args.model is not None and not os.path.isfile(args.model):
-            parser.error(f'--model [{args.model}] is not a valid resume file')
-        if args.timesteps_per_batch < 1:
-            parser.error(f'--timesteps-per-batch must be >= 1 (got {args.timesteps_per_batch})')
-
-    if args.infer:
-        if args.model is None:
-            parser.error('--infer requires --model to be specified')
-        if not os.path.isfile(args.model):
-            parser.error(f'--model [{args.model}] is not a valid file')
-        if args.lobby is None:
-            parser.error('--infer requires --lobby to be specified')
-        if args.host is None:
-            parser.error('--infer requires --host to be specified')
-
-    if args.eval:
-        if args.model_dir is None:
-            parser.error('--eval requires --model-dir to be specified')
-        if not os.path.isdir(args.model_dir):
-            parser.error(f'--model-dir [{args.model_dir}] is not a valid directory')
-
-    if (args.train or args.eval) and gong_zhu is None:
-        parser.error('--train/--eval require the native module; run ./build.sh and activate .venv')
-
-    return args
-
 def crash_on_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
     print('=' * 80, flush = True, file = sys.stderr)
     print(f'FATAL: Unhandled exception in asyncio loop', flush = True, file = sys.stderr)
@@ -1728,7 +1602,7 @@ def crash_on_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
     os._exit(1)
 
 async def main() -> None:
-    args: argparse.Namespace = parse_arguments()
+    args: argparse.Namespace = parse_arguments(native_available = gong_zhu is not None)
 
     if args.seed is not None:
         random.seed(args.seed)
