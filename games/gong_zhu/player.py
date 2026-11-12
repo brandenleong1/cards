@@ -406,7 +406,8 @@ class MultiAgentEnv:
         self.gamma: float =                         0.95
         self.gae_lambda: float =                    0.95
         self.clip_epsilon: float =                  0.2
-        self.n_updates_per_batch: int =             8
+        self.actor_n_updates_per_batch: int =       8
+        self.critic_n_updates_per_batch: int =      1
         self.mini_batch_size: int =                 256
         self.actor_lr: float =                      self.args.actor_lr
         self.critic_lr: float =                     self.args.critic_lr
@@ -1248,7 +1249,7 @@ class MultiAgentEnv:
                 phase_advantages = batch_advantages[mask]
                 batch_advantages[mask] = (phase_advantages - phase_advantages.mean()) / (phase_advantages.std() + eps)
 
-        batch_values_old = self.critic_values(batch_states)
+        batch_values_old = self.critic_values(batch_states) if self.critic_n_updates_per_batch > 0 else torch.zeros_like(batch_returns)
 
         if self.actor_optimizer is None:
             self.actor_optimizer =      torch.optim.Adam(self.actor.parameters(),   lr = self.actor_lr,     fused = True)
@@ -1267,7 +1268,7 @@ class MultiAgentEnv:
         clip_fractions = []
 
         for epoch in tqdm(
-                range(self.n_updates_per_batch),
+                range(self.actor_n_updates_per_batch),
                 desc = f'Training ({len(batch_state_dicts)} samples): ',
                 dynamic_ncols = True
         ):
@@ -1288,8 +1289,6 @@ class MultiAgentEnv:
 
                 mini_batch_log_probs_new =  torch.zeros(mini_batch_indices.shape[0], device = self.device)
                 mini_batch_entropy =        torch.tensor(0.0, device = self.device)
-
-                mini_batch_values_new = self.critic(mini_batch_states)
 
                 if mini_batch_show_mask.any():
                     show_log_probs, show_entropy = self.actor['SHOW'].evaluate_actions(
@@ -1317,26 +1316,28 @@ class MultiAgentEnv:
 
                 actor_loss = -torch.min(partial_min_1, partial_min_2).mean() - self.entropy_coef * mini_batch_entropy
 
-                critic_loss_per_sample = F.huber_loss(mini_batch_values_new, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
-                critic_loss = critic_loss_per_sample.mean()
-
-                if mini_batch_show_mask.any():
-                    show_critic_losses.append(critic_loss_per_sample[mini_batch_show_mask].mean().item())
-                if mini_batch_play_mask.any():
-                    play_critic_losses.append(critic_loss_per_sample[mini_batch_play_mask].mean().item())
-
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
                 self.actor_optimizer.step()
 
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-                self.critic_optimizer.step()
+                if epoch < self.critic_n_updates_per_batch:
+                    mini_batch_values_new = self.critic(mini_batch_states)
+                    critic_loss_per_sample = F.huber_loss(mini_batch_values_new, mini_batch_returns, reduction = 'none', delta = self.huber_loss_delta)
+                    critic_loss = critic_loss_per_sample.mean()
+
+                    if mini_batch_show_mask.any():
+                        show_critic_losses.append(critic_loss_per_sample[mini_batch_show_mask].mean().item())
+                    if mini_batch_play_mask.any():
+                        play_critic_losses.append(critic_loss_per_sample[mini_batch_play_mask].mean().item())
+
+                    self.critic_optimizer.zero_grad()
+                    critic_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+                    self.critic_optimizer.step()
+                    critic_losses.append(critic_loss.item())
 
                 actor_losses.append(actor_loss.item())
-                critic_losses.append(critic_loss.item())
                 entropy_values.append(mini_batch_entropy.item())
 
                 with torch.no_grad():
@@ -1351,7 +1352,7 @@ class MultiAgentEnv:
 
         all_episode_rewards = [rewards.sum() for stream in trajectories['rewards'] for rewards in stream]
 
-        predicted_values = self.critic_values(batch_states)
+        predicted_values = self.critic_values(batch_states) if self.critic_n_updates_per_batch > 0 else torch.zeros_like(batch_returns)
         show_explained_variance = float('nan')
         play_explained_variance = float('nan')
         with torch.no_grad():
@@ -1364,7 +1365,7 @@ class MultiAgentEnv:
 
         self.training_history.setdefault('batch', []).append(self.batch_num)
         self.training_history.setdefault('actor_loss', []).append(actor_losses[-1])
-        self.training_history.setdefault('critic_loss', []).append(critic_losses[-1])
+        self.training_history.setdefault('critic_loss', []).append(critic_losses[-1] if critic_losses else float('nan'))
         self.training_history.setdefault('mean_kl_divergence', []).append(np.mean(kl_divergences))
         self.training_history.setdefault('mean_entropy', []).append(np.mean(entropy_values))
         self.training_history.setdefault('mean_clip_fraction', []).append(np.mean(clip_fractions))
@@ -1373,15 +1374,17 @@ class MultiAgentEnv:
         self.training_history.setdefault('min_episode_reward', []).append(min(all_episode_rewards) if all_episode_rewards else 0)
         self.training_history.setdefault('mean_episode_reward', []).append(np.mean(all_episode_rewards) if all_episode_rewards else 0)
 
+        loss_range = lambda losses: f'{losses[0]:.4f} -> {losses[-1]:.4f}' if losses else 'n/a (no critic)'
+
         log_path = os.path.join(self.args.model_dir, self.args.log_file)
         os.makedirs(self.args.model_dir, exist_ok = True)
         with open(log_path, 'a') as f:
             print(f'-- Training Complete (Batch {self.batch_num}) --', file = f)
             print(f'  Total Samples: {batch_len}', file = f)
             print(f'  Actor Loss: {actor_losses[0]:.4f} -> {actor_losses[-1]:.4f}', file = f)
-            print(f'  Critic Loss: {critic_losses[0]:.4f} -> {critic_losses[-1]:.4f}', file = f)
-            print(f'  SHOW Critic Loss: {show_critic_losses[0]:.4f} -> {show_critic_losses[-1]:.4f}', file = f)
-            print(f'  PLAY Critic Loss: {play_critic_losses[0]:.4f} -> {play_critic_losses[-1]:.4f}', file = f)
+            print(f'  Critic Loss: {loss_range(critic_losses)}', file = f)
+            print(f'  SHOW Critic Loss: {loss_range(show_critic_losses)}', file = f)
+            print(f'  PLAY Critic Loss: {loss_range(play_critic_losses)}', file = f)
             print(f'  SHOW Explained Variance: {show_explained_variance:.4f}', file = f)
             print(f'  PLAY Explained Variance: {play_explained_variance:.4f}', file = f)
             print(f'  SHOW samples: {show_mask.sum().item()} | PLAY samples: {play_mask.sum().item()}', file = f)
@@ -1425,6 +1428,9 @@ class MultiAgentEnv:
         all_advantages = []
         all_returns = []
 
+        # Without a critic the values are 0, so lambda must be 1 for the advantages to be plain discounted returns
+        gae_lambda = self.gae_lambda if self.critic_n_updates_per_batch > 0 else 1.0
+
         n_streams = len(trajectories['states'])
 
         for stream_idx in range(n_streams):
@@ -1442,7 +1448,7 @@ class MultiAgentEnv:
                 for k in stream_states[0].keys()
             }
 
-            batch_values = self.critic_values(stacked_states).cpu().numpy()
+            batch_values = self.critic_values(stacked_states).cpu().numpy() if self.critic_n_updates_per_batch > 0 else np.zeros(len(stream_states), dtype = np.float32)
 
             value_idx = 0
             for episode_rewards in stream_rewards:
@@ -1463,7 +1469,7 @@ class MultiAgentEnv:
                         next_val = episode_values[t + 1]
 
                     delta = episode_rewards[t] + self.gamma * next_val - episode_values[t]
-                    last_gae = delta + self.gamma * self.gae_lambda * last_gae
+                    last_gae = delta + self.gamma * gae_lambda * last_gae
                     episode_advantages[t] = last_gae
 
                 episode_returns = episode_advantages + episode_values
