@@ -778,11 +778,13 @@ class MultiAgentEnv:
             actor = self.actor if self._opponent_actors[first_stream] is None else self._opponent_actors[first_stream]
 
             states = [self._latest_state[stream] for stream, env, seat, mt in items]
-            inputs = {k: torch.tensor(np.stack([state[k] for state in states]), dtype = torch.float32).to(self.device) for k in states[0]}
-            masks = torch.tensor(np.stack([actor[module_type].calculate_action_mask(state) for state in states])).to(self.device)
+            inputs = {k: torch.tensor(np.stack([state[k] for state in states]), dtype = torch.float32) for k in states[0]}
+            masks = torch.tensor(np.stack([actor[module_type].calculate_action_mask(state) for state in states]))
 
             with torch.no_grad():
-                actions, log_probs = actor[module_type](inputs, masks)
+                actions, log_probs = actor[module_type]({k: v.to(self.device) for k, v in inputs.items()}, masks.to(self.device))
+
+            actions, log_probs = actions.cpu(), log_probs.cpu()
 
             for i, (stream, env, seat, mt) in enumerate(items):
                 if self._opponent_actors[stream] is None:
@@ -790,10 +792,10 @@ class MultiAgentEnv:
                         self._episode_rewards[stream].clear()
                         self._episode_ts[stream] = 0
 
-                    self._batch_states[stream].append({k: inputs[k][i].cpu() for k in inputs})
-                    self._batch_actions[stream].append(actions[i].cpu())
-                    self._batch_action_masks[stream].append(masks[i].cpu())
-                    self._batch_log_probs[stream].append(log_probs[i].cpu())
+                    self._batch_states[stream].append({k: inputs[k][i] for k in inputs})
+                    self._batch_actions[stream].append(actions[i])
+                    self._batch_action_masks[stream].append(masks[i])
+                    self._batch_log_probs[stream].append(log_probs[i])
                     self._episode_rewards[stream].append(np.array([0.0]))
                     self._episode_ts[stream] += 1
                     recorded += 1
