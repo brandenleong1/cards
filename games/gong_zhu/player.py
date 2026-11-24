@@ -411,7 +411,7 @@ class MultiAgentEnv:
         self.mini_batch_size: int =                 256
         self.actor_lr: float =                      self.args.actor_lr
         self.critic_lr: float =                     self.args.critic_lr
-        self.entropy_coef: float =                  0.01
+        self.entropy_coef: float =                  self.args.entropy_coef
         self.max_grad_norm: float =                 0.5
         self.huber_loss_delta: float =              2.0
 
@@ -1310,7 +1310,7 @@ class MultiAgentEnv:
                         mini_batch_action_masks[mini_batch_show_mask]
                     )
                     mini_batch_log_probs_new[mini_batch_show_mask] = show_log_probs
-                    mini_batch_entropy += show_entropy
+                    mini_batch_entropy += show_entropy * mini_batch_show_mask.float().mean()
 
                 if mini_batch_play_mask.any():
                     play_log_probs, play_entropy = self.actor['PLAY'].evaluate_actions(
@@ -1319,7 +1319,7 @@ class MultiAgentEnv:
                         mini_batch_action_masks[mini_batch_play_mask]
                     )
                     mini_batch_log_probs_new[mini_batch_play_mask] = play_log_probs
-                    mini_batch_entropy += play_entropy
+                    mini_batch_entropy += play_entropy * mini_batch_play_mask.float().mean()
 
                 ratios = torch.exp(mini_batch_log_probs_new - mini_batch_log_probs.detach())
                 ratios = torch.clamp(ratios, eps, 100.0)

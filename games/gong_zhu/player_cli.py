@@ -20,6 +20,7 @@ class Defaults:
     opponent_sampling: str =        'latest'
     actor_lr: float =               2e-5
     critic_lr: float =              3e-4
+    entropy_coef: float =           0.01
     num_batches: int | None =       None
 
     # Inference
@@ -94,6 +95,10 @@ def parse_arguments(native_available: bool) -> argparse.Namespace:
     parser.add_argument(
         '--critic-lr', type = float, default = DEFAULTS.critic_lr,
         help = 'Critic learning rate'
+    )
+    parser.add_argument(
+        '--entropy-coef', type = float, default = DEFAULTS.entropy_coef,
+        help = 'Entropy bonus coefficient'
     )
     parser.add_argument(
         '--num-batches', type = int, default = DEFAULTS.num_batches,
