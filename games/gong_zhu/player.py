@@ -534,11 +534,22 @@ class MultiAgentEnv:
     def learner_seat(self, env_idx: int) -> int:
         return env_idx % self.num_agents
 
+    def dedupe_model_paths(self, model_paths: list[str]) -> list[str]:
+        unique_paths: dict[checkpoint_io.ModelRegistry.ModelId, str] = {}
+        for path in model_paths:
+            unique_paths.setdefault(self.actor_registry.get_id(path), path)
+        if len(unique_paths) < len(model_paths):
+            warnings.warn(f'Skipping {len(model_paths) - len(unique_paths)} duplicate checkpoint(s) in [{self.args.model_dir}]')
+        model_paths = list(unique_paths.values())
+        return model_paths
+
     def load_opponent_models(self) -> None:
         self._opponent_actors = [None for _ in range(self.num_streams)]
 
         model_paths = checkpoint_io.list_checkpoints(self.args.model_dir)
         model_paths = [path for path in model_paths if os.path.basename(path) != 'latest_model.pt']
+
+        model_paths = self.dedupe_model_paths(model_paths)
 
         if len(model_paths) == 0:
             return
@@ -1496,6 +1507,7 @@ class MultiAgentEnv:
 
     async def eval(self) -> None:
         model_paths = checkpoint_io.list_checkpoints(self.args.model_dir)
+        model_paths = self.dedupe_model_paths(model_paths)
 
         if len(model_paths) < self.num_agents:
             print(f'Not enough models found in directory [{os.path.abspath(self.args.model_dir)}] ({len(model_paths)} < {self.num_agents})')
