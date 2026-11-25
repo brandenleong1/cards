@@ -58,7 +58,7 @@ class RatingSystem:
         if len(models.keys()) != len(seating[0]):
             raise ValueError(f'Argument [seating] must contain {len(seating[0])} distinct models, got {len(models.keys())} ({seating[0]})')
 
-        aggregate_scores: dict[ModelRegistry.ModelId, float] = {self.get_id(path): 0 for path in model_paths}
+        aggregate_scores: dict[ModelRegistry.ModelId, float] = {self.get_id(path): 0.0 for path in model_paths}
 
         for i, (seating_i, scores_i) in enumerate(zip(seating, scores)):
             if model_paths != (model_paths_i := set(seating_i)):
@@ -71,7 +71,7 @@ class RatingSystem:
                 raise ValueError(f'Argument [scores] contains mismatched length at index {i} ({len(seating[0])} != {len(scores_i)})')
 
             for seat, score in zip(seating_i, scores_i):
-                aggregate_scores[self.get_id(seat)] += score
+                aggregate_scores[self.get_id(seat)] += float(score)
 
         set_result = SetResult(
             run_id = self.run_info.run_id,

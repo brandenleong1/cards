@@ -28,8 +28,7 @@ class Defaults:
     host: str | None =              None
 
     # Evaluation
-    k_factor: float =               32.0
-    reset_elo: bool =               False
+    margin_scale: float =           200.0
 
 DEFAULTS = Defaults()
 
@@ -125,12 +124,8 @@ def parse_arguments(native_available: bool) -> argparse.Namespace:
 
     # Evaluation Options
     parser.add_argument(
-        '--k-factor', type = float, default = DEFAULTS.k_factor,
-        help = 'K-Factor for Elo calculation'
-    )
-    parser.add_argument(
-        '--reset-elo', action = 'store_true', default = DEFAULTS.reset_elo,
-        help = 'Reset Elo ratings for all models before starting evaluation'
+        '--margin-scale', type = float, default = DEFAULTS.margin_scale,
+        help = 'Point margin scale for soft wins in Elo calculation'
     )
 
     check_defaults(parser)

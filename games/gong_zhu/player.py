@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import traceback
+import uuid
 import warnings
 
 import asyncio
@@ -24,7 +25,8 @@ from tqdm import tqdm
 
 from typing import TYPE_CHECKING, Any, cast
 
-from cards.rl.eval.elo_rating import EloRatingSystem
+from cards.rl.eval.rating_system import RatingSystem
+from cards.rl.eval.results import RunInfo
 from cards.rl.nn.blocks import TrickSequenceEncoder
 from cards.rl import checkpoint_io
 from cards.rl import torch_utils
@@ -40,10 +42,10 @@ if TYPE_CHECKING:
     from cards.gong_zhu import Env as NativeEnv
 
 
-GAME_SETTINGS = {
-    'NUM_PLAYERS':  4,
-    'NUM_CARDS':    52 * 1
-}
+GAME_SETTINGS: dict[str, Any] = {}
+GAME_SETTINGS['NUM_PLAYERS'] =  4
+GAME_SETTINGS['NUM_CARDS'] =    52 * 1
+GAME_SETTINGS['SETTINGS'] =     {'expose3': True, 'zhu_yang_man_juan': True, 'num_players': GAME_SETTINGS['NUM_PLAYERS']}
 
 class GameStates(enum.Enum):
     SHOW_3 =        0
@@ -389,10 +391,7 @@ class MultiAgentEnv:
 
         self.train_total_batches: int =             0
 
-        self.elo_rating_system: EloRatingSystem =   EloRatingSystem(k_factor = self.args.k_factor)
         self.eval_games_per_match: int =            20
-        self.eval_total_matches: int =              0
-        self.eval_total_games: int =                0
 
 
     def _init_hyperparameters(self) -> None:
@@ -452,7 +451,6 @@ class MultiAgentEnv:
 
         self.eval_actors: list[ActorDict | None] =                      [None                   for _ in range(self.num_agents)]
         self.eval_model_paths: list[str | None] =                       [None                   for _ in range(self.num_agents)]
-        self.eval_scores: list[float] =                                 [0.0                    for _ in range(self.num_agents)]
 
         self._rollout_progressbar: tqdm | None =                        None
 
@@ -656,7 +654,7 @@ class MultiAgentEnv:
         self._turn_order = [str(seat) for seat in range(self.num_agents)]
 
         envs = [
-            gong_zhu.Env({'expose3': True, 'zhu_yang_man_juan': True, 'num_players': self.num_agents})
+            gong_zhu.Env(GAME_SETTINGS['SETTINGS'])
             for _ in range(self.num_envs)
         ]
 
@@ -712,7 +710,7 @@ class MultiAgentEnv:
         if gong_zhu is None:
             raise RuntimeError('Native module unavailable; build/install it (from cards import gong_zhu)')
 
-        env = gong_zhu.Env({'expose3': True, 'zhu_yang_man_juan': True, 'num_players': self.num_agents})
+        env = gong_zhu.Env(GAME_SETTINGS['SETTINGS'])
 
         for seat in range(self.num_agents):
             self.reset_game_state(seat)
@@ -1513,10 +1511,14 @@ class MultiAgentEnv:
             print(f'Not enough models found in directory [{os.path.abspath(self.args.model_dir)}] ({len(model_paths)} < {self.num_agents})')
             return
 
-        if self.args.reset_elo:
-            self.elo_rating_system.reset_all_ratings(model_paths)
-            self.eval_total_matches = 0
-            self.eval_total_games = 0
+        rating_system = RatingSystem(
+            results_path = os.path.join(self.args.model_dir, 'eval_results.jsonl'),
+            get_id = self.actor_registry.get_id,
+            run_info = RunInfo(uuid.uuid4().hex, 'gong_zhu', GAME_SETTINGS['SETTINGS']),
+            scale = self.args.margin_scale
+        )
+
+        total_matches = 0
 
         self.num_envs = 1
         self.reset()
@@ -1528,7 +1530,6 @@ class MultiAgentEnv:
             batch_models = random.sample(model_paths, self.num_agents)
 
             batch_model_names = [os.path.basename(p) for p in batch_models]
-            batch_model_ratings = [f'{self.elo_rating_system.get_rating(p):.2f}' for p in batch_models]
 
             log_path = os.path.join(self.args.model_dir, self.args.log_file)
             os.makedirs(self.args.model_dir, exist_ok = True)
@@ -1536,7 +1537,6 @@ class MultiAgentEnv:
                 print(f'', file = f)
                 print(f'=== Starting Evaluation Matchup ===', file = f)
                 print(f'  Models: {batch_model_names}', file = f)
-                print(f'  Ratings: {batch_model_ratings}', file = f)
                 print(f'  Sets to Play: {self.eval_games_per_match}', file = f)
 
             # Play [self.eval_games_per_match] Sets
@@ -1546,66 +1546,40 @@ class MultiAgentEnv:
                 set_models = random.sample(batch_models, self.num_agents)
                 set_scores = {model_path: 0.0 for model_path in set_models}
 
+                full_set_models = []
+                full_set_scores = []
+
                 for rotation in range(self.num_agents):
                     rotated_models = [set_models[(i + rotation) % self.num_agents] for i in range(self.num_agents)]
                     self.load_models(rotated_models)
 
-                    self.eval_scores = self.play_eval_game(set_seed)
+                    rotation_scores = self.play_eval_game(set_seed)
 
-                    for seat in range(self.num_agents):
-                        set_scores[rotated_models[seat]] += self.eval_scores[seat]
+                    full_set_models.append(rotated_models)
+                    full_set_scores.append(rotation_scores)
 
-                self.eval_total_games += 1
+                    for model, score in zip(rotated_models, rotation_scores):
+                        set_scores[model] += score
 
-                agg_paths = list(set_scores.keys())
-                agg_scores = [set_scores[p] for p in agg_paths]
-                rating_changes = self.elo_rating_system.update_ratings(agg_paths, agg_scores)
+                rating_system.record_set(set_seed, full_set_models, full_set_scores)
+
+                agg_paths = sorted(list(set(set_models)))
 
                 log_path = os.path.join(self.args.model_dir, self.args.log_file)
                 os.makedirs(self.args.model_dir, exist_ok = True)
                 with open(log_path, 'a') as f:
                     print(f' --- Eval Set {game_idx + 1} / {self.eval_games_per_match} (seed {set_seed}) ---', file = f)
-                    print(f'  Total Sets: {self.eval_total_games}', file = f)
+                    print(f'  Total Sets: {len(rating_system.sets)}', file = f)
                     for model_path in agg_paths:
                         model_name = os.path.basename(model_path)
-                        rating = self.elo_rating_system.get_rating(model_path)
-                        change = rating_changes.get(os.path.abspath(model_path), 0)
                         print(f'  [{model_name}]:', file = f)
                         print(f'    Aggregate Score = {set_scores[model_path]}', file = f)
-                        print(f'    ELO = {rating:.4f} ({change:+.4f})', file = f)
-
-                self.save_all_ratings()
 
             # Matchup Complete
-            self.eval_total_matches += 1
-            self.print_leaderboard()
+            total_matches += 1
 
-    def print_leaderboard(self) -> None:
-        leaderboard = self.elo_rating_system.get_leaderboard()
-
-        log_path = os.path.join(self.args.model_dir, self.args.log_file)
-        os.makedirs(self.args.model_dir, exist_ok = True)
-        with open(log_path, 'a') as f:
-            print(f'', file = f)
-            print(f'{"=" * 60}', file = f)
-            print(f' ELO LEADERBOARD (after {self.eval_total_games} games)', file = f)
-            print(f' {"Rank":<6}{"Model":<35}{"ELO":<8}{"Games":<8}', file = f)
-            print(f' {"-" * 58} ', file = f)
-            for rank, (path, rating, games) in enumerate(leaderboard, 1):
-                name = os.path.basename(path)
-                print(f' {rank:<6}{name:<35}{rating:<8.2f}{games:<8}', file = f)
-            print(f'{"=" * 60}', file = f)
-
-    def save_all_ratings(self) -> None:
-        saved_ratings_count = 0
-        for model_path in self.elo_rating_system.ratings:
-            try:
-                self.elo_rating_system.save_rating(model_path)
-                saved_ratings_count += 1
-            except Exception as e:
-                warnings.warn(f'Failed to save rating for [{model_path}]: {e}')
-
-        print(f'Saved ELO ratings for {saved_ratings_count} / {len(self.elo_rating_system.ratings)} models')
+            with open(log_path, 'a') as f:
+                print(rating_system.get_leaderboard(model_paths, with_intervals = (total_matches % 10 == 0)), file = f)
 
 def crash_on_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
     print('=' * 80, flush = True, file = sys.stderr)
